@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/colinmarc/hdfs"
-	"github.com/robfig/cron"
 	"github.com/testusr/BackUpTest/db"
 	"github.com/testusr/BackUpTest/tape"
 )
@@ -29,10 +28,11 @@ func init() {
 }
 
 type backUpconfig struct {
-	Client     *hdfs.Client
-	TapeConfig *tape.Config
-	DB         *pgdb.DBConn
-	mutex      *sync.Mutex
+	Client          *hdfs.Client
+	TapeConfig      *tape.Config
+	DB              *pgdb.DBConn
+	syncMakeExecJob *sync.Mutex
+	syncTapeChange  *sync.Mutex
 }
 
 /**
@@ -47,19 +47,20 @@ func (config *backUpconfig) makeJobs(poolID string, jobType string, makeJobCompl
 			return err
 		}
 		// Each Job is a directory in HDFS
-		if info.IsDir() {
-			pathspecid, schedule, err := config.DB.GetPathSpec(path)
-			if err != nil {
-				return err
-			}
-			// If the backup schedule of the directory is different
-			if schedule != jobType {
-				return nil
-			}
-			err = config.DB.AddJob(path, poolID, pathspecid)
-			if err != nil {
-				return err
-			}
+		if !info.IsDir() {
+			return nil
+		}
+		pathspecid, schedule, err := config.DB.GetPathSpec(path)
+		if err != nil {
+			return err
+		}
+		// Check if the backup schedule of the directory is different
+		if schedule != jobType {
+			return nil
+		}
+		err = config.DB.AddJob(path, poolID, pathspecid)
+		if err != nil {
+			return err
 		}
 		return nil
 	})
@@ -124,6 +125,7 @@ func (config *backUpconfig) execJobs(poolID string, makeJobCompleted chan error)
 		duration := time.Now().In(time.UTC).Sub(startTime)
 
 		if err != nil {
+			// TODO; what should happen when there is an error while performing a single Job
 			err := config.DB.UpdateJob(aJob.ID, aJob.Name, startTime, duration, numOfFiles, pgdb.States.InComplete, aJob.PoolID)
 			if err != nil {
 				return err
@@ -158,7 +160,7 @@ func (config *backUpconfig) execSingleJob(jobID int, path string, tapeID int, po
 		return filesAdded, err
 	}
 
-	fmt.Println(path)
+	fmt.Println(poolID, path)
 
 	// Get the time when directory "path" was last backed up
 	lastExecTime, err := config.DB.GetLastExec(path, poolID)
@@ -250,7 +252,7 @@ func (config *backUpconfig) changeTape(poolID string) (int, error) {
 		return -1, err
 	}
 
-	unloadTo, err := tape.GetAEmptySlot()
+	unloadTo, err := tape.GetAEmptySlot(config.syncTapeChange)
 	if err != nil {
 		return -1, err
 	}
@@ -418,13 +420,12 @@ Description:
 Parameters:
 	(See cronJob)
 */
-func (config *backUpconfig) cleanUp(cron *cron.Cron, poolID string) {
+func (config *backUpconfig) cleanUp(poolID string) {
 
 	if err := config.DB.InterruptCloseJob(poolID); err != nil {
 		log.Println(err)
 	}
 
-	cron.Stop()
 	config.TapeConfig.WriteEOF()
 	config.TapeConfig.CloseTape()
 	config.DB.Close()

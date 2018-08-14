@@ -15,7 +15,9 @@ import (
 
 func main() {
 
-	backUp := new(backUpconfig)
+	backUpA := new(backUpconfig)
+	backUpB := new(backUpconfig)
+
 	var err error
 
 	if len(os.Args) < 2 {
@@ -25,37 +27,43 @@ func main() {
 
 	poolID := os.Args[1]
 
-	backUp.DB = pgdb.New()
-	if backUp.DB == nil {
-		return
+	err = setupBackupConfig(backUpA, poolID)
+	if err != nil {
+		closeAll(backUpA)
 	}
-	defer backUp.DB.Close()
+	defer closeAll(backUpA)
 
-	backUp.Client, err = hdfs.New("us-lax-9a-ym-00:8020")
+	pairPoolID, err := backUpA.DB.GetPair(poolID)
 	if err != nil {
 		return
 	}
-	defer backUp.Client.Close()
 
-	err = backUp.setUpTape(poolID)
+	err = setupBackupConfig(backUpB, pairPoolID)
 	if err != nil {
-		return
+		closeAll(backUpB)
 	}
-	defer backUp.TapeConfig.CloseTape()
+	defer closeAll(backUpB)
 
 	// Channel used to for communication betweem makeJob go routine and exexJobs go routine
-	makeJobCompleted := make(chan error)
+	makeJobCompletedA := make(chan error)
+	makeJobCompletedB := make(chan error)
 
 	cron := cron.New()
 
-	backUp.mutex = &sync.Mutex{}
+	backUpA.syncMakeExecJob = &sync.Mutex{}
+	backUpB.syncMakeExecJob = &sync.Mutex{}
+
+	backUpA.syncTapeChange = &sync.Mutex{}
+	backUpB.syncTapeChange = backUpA.syncTapeChange
 
 	// Catching Signal Interrupt
 	c := make(chan os.Signal)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		<-c
-		backUp.cleanUp(cron, poolID)
+		cron.Stop()
+		backUpA.cleanUp(poolID)
+		backUpB.cleanUp(pairPoolID)
 		os.Exit(1)
 	}()
 
@@ -63,14 +71,19 @@ func main() {
 	jobType := "Hourly"
 
 	// Tests <------
-	sch1 := "00 */02 * * * *"
+	sch1 := "00 * * * * *"
 
 	arr := []string{"/ccr/2017", "/ccr/2018/07", "/ccr/2018/02", "/ccr/2018/"}
 	i := -1
+	j := -1
 
 	cron.AddFunc(sch1, func() {
 		i = (i + 1) % 4
-		cronJob(backUp, arr[i], poolID, jobType, makeJobCompleted)
+		cronJob(backUpA, arr[i], poolID, jobType, makeJobCompletedA)
+	})
+	cron.AddFunc(sch1, func() {
+		j = (j + 1) % 4
+		cronJob(backUpB, arr[j], pairPoolID, jobType, makeJobCompletedB)
 	})
 	// Tests <-------
 
@@ -106,7 +119,7 @@ Parameters:
 func cronJob(backUp *backUpconfig, root string, poolID string, jobType string, makeJobCompleted chan error) {
 
 	// Only one cronJob will run at a time
-	backUp.mutex.Lock()
+	backUp.syncMakeExecJob.Lock()
 
 	go backUp.makeJobs(poolID, jobType, makeJobCompleted, root)
 
@@ -114,5 +127,34 @@ func cronJob(backUp *backUpconfig, root string, poolID string, jobType string, m
 		return
 	}
 
-	backUp.mutex.Unlock()
+	backUp.syncMakeExecJob.Unlock()
+}
+
+func setupBackupConfig(config *backUpconfig, poolID string) error {
+	var err error
+	config.DB, err = pgdb.New()
+	if config.DB == nil {
+		return err
+	}
+	config.Client, err = hdfs.New("us-lax-9a-ym-00:8020")
+	if err != nil {
+		return err
+	}
+	err = config.setUpTape(poolID)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func closeAll(config *backUpconfig) {
+	if config.DB != nil {
+		config.DB.Close()
+	}
+	if config.Client != nil {
+		config.Client.Close()
+	}
+	if config.TapeConfig != nil {
+		config.TapeConfig.CloseTape()
+	}
 }

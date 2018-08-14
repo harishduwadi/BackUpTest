@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/lib/pq"
@@ -140,8 +141,9 @@ func (db *DBConn) GetPathSpec(path string) (int, string, error) {
 
 	err := row.Scan(&id, &schedule)
 	if err == sql.ErrNoRows {
-		// TODO: Need to change this specification; there is no job that is modified hourly,
-		if err := db.AddPathSpec(path, "Hourly"); err != nil {
+		// Need to make sure pathspec table has unique flag on for name
+		err = db.AddPathSpec(path, "Hourly")
+		if err != nil {
 			return -1, "", err
 		}
 		return db.GetPathSpec(path)
@@ -166,6 +168,10 @@ func (db *DBConn) AddPathSpec(path string, schedule string) error {
 	query := "INSERT INTO PathSpec VALUES (DEFAULT, $1, $2)"
 	_, err := db.DBSql.Exec(query, path, schedule)
 	if err != nil {
+		err2, _ := err.(*pq.Error)
+		if err2.Code.Name() == "unique_violation" {
+			return nil
+		}
 		return err
 	}
 	return nil
@@ -274,6 +280,7 @@ func (db *DBConn) GetStoragePath(poolID string) (string, error) {
 			return "", err
 		}
 	} else {
+		// TODO when the tape is not loaded into the tape drive ??
 		return "", errors.New(`Tape From That Pool Is Not Loaded Or the DB is Not Updated! 
 		Please load the Tape and update the DB`)
 	}
@@ -368,41 +375,41 @@ Parameter:
 Return:
 	The tapeId, poolID, and slotnumber of tape for different location
 */
-func (db *DBConn) GetLocationPair(poolID string) (int, int, int, error) {
+func (db *DBConn) GetPair(poolID string) (string, error) {
 	query := "SELECT name FROM Tape WHERE poolid=$1 ORDER BY name"
 	row := db.DBSql.QueryRow(query, poolID)
 	var poolName string
 	err := row.Scan(&poolName)
 	if err != nil {
-		return -1, -1, -1, err
+		return "", err
 	}
 	// Getting the string eg ST_000L7 (3rd slot represents the location)
 	pairPoolName := poolName[:2] + "_" + poolName[3:]
-	query = "SELECT id, poolid, slotnumber From Tape WHERE poolID<>$1 AND name LIKE $2 ORDER BY name"
+	query = "SELECT poolid From Tape WHERE poolID<>$1 AND name LIKE $2 ORDER BY name"
 	row = db.DBSql.QueryRow(query, poolID, pairPoolName)
-	var tapeID, pairPoolID, slotnumber int
-	err = row.Scan(&tapeID, pairPoolID, slotnumber)
+	var pairPoolID int
+	err = row.Scan(&pairPoolID)
 	if err != nil {
-		return -1, -1, -1, err
+		return "", err
 	}
-	return tapeID, pairPoolID, slotnumber, nil
+	return strconv.Itoa(pairPoolID), nil
 }
 
 /**
 Description: This method is used to connect to the pg server
 */
-func New() *DBConn {
+func New() (*DBConn, error) {
 	connStr := "user=admin password=password dbname=backupTest"
 
 	db, err := sql.Open("postgres", connStr)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
-		return nil
+		return nil, err
 	}
 
 	return &DBConn{
 		DBSql: db,
-	}
+	}, nil
 }
 
 /**

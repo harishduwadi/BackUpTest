@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"regexp"
-	"strconv"
 
 	"github.com/benmcclelland/mtio"
 )
@@ -68,22 +67,6 @@ func (ConfigVar *Config) DeepCopy(tapePath string) error {
 	ConfigVar.TapePath = temp.TapePath
 
 	return nil
-}
-
-func GetAEmptySlot() (int, error) {
-	statusString, err := GetMTXStatus()
-	if err != nil {
-		return -1, err
-	}
-	matches := emptyReg.FindStringSubmatch(statusString)
-	if matches == nil {
-		return -1, err
-	}
-	slot, err := strconv.Atoi(matches[1])
-	if err != nil {
-		return -1, err
-	}
-	return slot, nil
 }
 
 func (ConfigVar *Config) FlushBuffers() error {
