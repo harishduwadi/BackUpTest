@@ -77,13 +77,28 @@ func main() {
 	i := -1
 	j := -1
 
+	stopThreadA := false
+	stopThreadB := false
+
 	cron.AddFunc(sch1, func() {
+		if stopThreadA {
+			return
+		}
 		i = (i + 1) % 4
-		cronJob(backUpA, arr[i], poolID, jobType, makeJobCompletedA)
+		err := cronJob(backUpA, arr[i], poolID, jobType, makeJobCompletedA)
+		if err != nil {
+			stopThreadA = true
+		}
 	})
 	cron.AddFunc(sch1, func() {
+		if stopThreadB {
+			return
+		}
 		j = (j + 1) % 4
 		cronJob(backUpB, arr[j], pairPoolID, jobType, makeJobCompletedB)
+		if err != nil {
+			stopThreadA = true
+		}
 	})
 	// Tests <-------
 
@@ -96,6 +111,10 @@ func main() {
 		time.Sleep(20 * time.Second)
 		// Testing
 		if time.Now().In(time.UTC).After(currentTime.Add(30 * time.Minute)) {
+			return
+		}
+
+		if stopThreadA && stopThreadB {
 			return
 		}
 	}
@@ -116,18 +135,20 @@ Parameters:
 	makeJobCompleted: represents the channel that is used for communcation betweeen the makeJob and execJob go routines
 	tapeconfig: package that is used to perform tape operations
 */
-func cronJob(backUp *backUpconfig, root string, poolID string, jobType string, makeJobCompleted chan error) {
+func cronJob(backUp *backUpconfig, root string, poolID string, jobType string, makeJobCompleted chan error) error {
 
 	// Only one cronJob will run at a time
 	backUp.syncMakeExecJob.Lock()
+	defer backUp.syncMakeExecJob.Unlock()
 
 	go backUp.makeJobs(poolID, jobType, makeJobCompleted, root)
 
 	if err := backUp.execJobs(poolID, makeJobCompleted); err != nil {
-		return
+		return err
 	}
 
-	backUp.syncMakeExecJob.Unlock()
+	return nil
+
 }
 
 func setupBackupConfig(config *backUpconfig, poolID string) error {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"archive/tar"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -28,11 +29,14 @@ func init() {
 }
 
 type backUpconfig struct {
-	Client          *hdfs.Client
-	TapeConfig      *tape.Config
-	DB              *pgdb.DBConn
-	syncMakeExecJob *sync.Mutex
-	syncTapeChange  *sync.Mutex
+	Client              *hdfs.Client
+	TapeConfig          *tape.Config
+	DB                  *pgdb.DBConn
+	syncMakeExecJob     *sync.Mutex
+	syncTapeChange      *sync.Mutex
+	signalInterruptChan bool
+	makeJobClosed       chan int
+	execJobClosed       chan int
 }
 
 /**
@@ -45,6 +49,10 @@ func (config *backUpconfig) makeJobs(poolID string, jobType string, makeJobCompl
 	err := config.Client.Walk(root, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
+		}
+		if config.signalInterruptChan {
+			config.makeJobClosed <- 1
+			return errors.New("Signal Interrupt")
 		}
 		// Each Job is a directory in HDFS
 		if !info.IsDir() {
@@ -125,12 +133,11 @@ func (config *backUpconfig) execJobs(poolID string, makeJobCompleted chan error)
 		duration := time.Now().In(time.UTC).Sub(startTime)
 
 		if err != nil {
-			// TODO; what should happen when there is an error while performing a single Job
-			err := config.DB.UpdateJob(aJob.ID, aJob.Name, startTime, duration, numOfFiles, pgdb.States.InComplete, aJob.PoolID)
-			if err != nil {
-				return err
+			updateErr := config.DB.UpdateJob(aJob.ID, aJob.Name, startTime, duration, numOfFiles, pgdb.States.InComplete, aJob.PoolID)
+			if updateErr != nil {
+				return updateErr
 			}
-			continue
+			return err
 		}
 		err = config.DB.UpdateJob(aJob.ID, aJob.Name, startTime, duration, numOfFiles, pgdb.States.Complete, aJob.PoolID)
 		if err != nil {
@@ -421,6 +428,10 @@ Parameters:
 	(See cronJob)
 */
 func (config *backUpconfig) cleanUp(poolID string) {
+
+	config.signalInterruptChan = true
+	<-config.makeJobClosed
+	<-config.execJobClosed // TODO: Need to work on this
 
 	if err := config.DB.InterruptCloseJob(poolID); err != nil {
 		log.Println(err)
