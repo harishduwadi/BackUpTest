@@ -141,6 +141,10 @@ func cronJob(backUp *backUpconfig, root string, poolID string, jobType string, m
 	backUp.syncMakeExecJob.Lock()
 	defer backUp.syncMakeExecJob.Unlock()
 
+	if backUp.signalInterruptChan {
+		return nil
+	}
+
 	go backUp.makeJobs(poolID, jobType, makeJobCompleted, root)
 
 	if err := backUp.execJobs(poolID, makeJobCompleted); err != nil {

@@ -51,7 +51,9 @@ func (config *backUpconfig) makeJobs(poolID string, jobType string, makeJobCompl
 			return err
 		}
 		if config.signalInterruptChan {
+			fmt.Println("make Job Closed signal sending")
 			config.makeJobClosed <- 1
+			fmt.Println("make Job Closed signal sent")
 			return errors.New("Signal Interrupt")
 		}
 		// Each Job is a directory in HDFS
@@ -92,6 +94,8 @@ func (config *backUpconfig) execJobs(poolID string, makeJobCompleted chan error)
 		return err
 	}
 
+	stopWrite := make(chan error)
+
 	jobCreationCompleted := false
 	var errorMakingJobs error
 
@@ -103,6 +107,13 @@ func (config *backUpconfig) execJobs(poolID string, makeJobCompleted chan error)
 	}()
 
 	for {
+
+		if errorMakingJobs != nil {
+			if config.signalInterruptChan {
+				stopWrite <- errors.New("Signal Interrupt")
+			}
+			return errorMakingJobs
+		}
 
 		startTime := time.Now().In(time.UTC)
 
@@ -116,9 +127,6 @@ func (config *backUpconfig) execJobs(poolID string, makeJobCompleted chan error)
 		if err != nil {
 			return err
 		}
-		if errorMakingJobs != nil {
-			return errorMakingJobs
-		}
 		if jobCreationCompleted && aJob == nil {
 			return nil
 		}
@@ -128,7 +136,7 @@ func (config *backUpconfig) execJobs(poolID string, makeJobCompleted chan error)
 		}
 
 		// Set up the writing of the acquired Job
-		numOfFiles, err := config.execSingleJob(aJob.ID, aJob.Name, tapeID, poolID)
+		numOfFiles, err := config.execSingleJob(aJob.ID, aJob.Name, tapeID, poolID, stopWrite)
 
 		duration := time.Now().In(time.UTC).Sub(startTime)
 
@@ -136,6 +144,9 @@ func (config *backUpconfig) execJobs(poolID string, makeJobCompleted chan error)
 			updateErr := config.DB.UpdateJob(aJob.ID, aJob.Name, startTime, duration, numOfFiles, pgdb.States.InComplete, aJob.PoolID)
 			if updateErr != nil {
 				return updateErr
+			}
+			if config.signalInterruptChan && strings.Contains(err.Error(), "Signal Interrupt") {
+				config.execJobClosed <- 1
 			}
 			return err
 		}
@@ -155,7 +166,7 @@ Return:
 	int: number of files that was written to the tape
 	error: any error occured while execution, or nil
 */
-func (config *backUpconfig) execSingleJob(jobID int, path string, tapeID int, poolID string) (int, error) {
+func (config *backUpconfig) execSingleJob(jobID int, path string, tapeID int, poolID string, stopWrite chan error) (int, error) {
 
 	filesAdded := 0
 	allFiles, err := config.Client.ReadDir(path)
@@ -188,7 +199,7 @@ func (config *backUpconfig) execSingleJob(jobID int, path string, tapeID int, po
 		}
 
 		// Stream hdfs reader to the tape writer
-		err = config.writeOneFile(fullPath, fileInfo, fileReader)
+		err = config.writeOneFile(fullPath, fileInfo, fileReader, stopWrite)
 		if err != nil {
 			if !strings.Contains(err.Error(), "no space left on device") {
 				return filesAdded, err
@@ -202,7 +213,7 @@ func (config *backUpconfig) execSingleJob(jobID int, path string, tapeID int, po
 
 			fileReader.Close()
 
-			err = config.restartJob(fullPath, fileInfo, path, jobID, newTapeID)
+			err = config.restartJob(fullPath, fileInfo, path, jobID, newTapeID, stopWrite)
 			if err != nil {
 				return filesAdded, err
 			}
@@ -226,13 +237,13 @@ func (config *backUpconfig) execSingleJob(jobID int, path string, tapeID int, po
 	return filesAdded, nil
 }
 
-func (config *backUpconfig) restartJob(fullPath string, fileInfo os.FileInfo, path string, jobID int, newTapeID int) error {
+func (config *backUpconfig) restartJob(fullPath string, fileInfo os.FileInfo, path string, jobID int, newTapeID int, stopWrite chan error) error {
 	fileReader, err := config.Client.Open(fullPath)
 	if err != nil {
 		return err
 	}
 
-	err = config.writeOneFile(fullPath, fileInfo, fileReader)
+	err = config.writeOneFile(fullPath, fileInfo, fileReader, stopWrite)
 	if err != nil {
 		return err
 	}
@@ -244,6 +255,9 @@ func (config *backUpconfig) restartJob(fullPath string, fileInfo os.FileInfo, pa
 }
 
 func (config *backUpconfig) changeTape(poolID string) (int, error) {
+
+	config.syncTapeChange.Lock()
+	defer config.syncTapeChange.Unlock()
 
 	fromSlot, newTapeID, err := config.DB.GetTapeFromPool(poolID)
 	if err != nil {
@@ -259,7 +273,7 @@ func (config *backUpconfig) changeTape(poolID string) (int, error) {
 		return -1, err
 	}
 
-	unloadTo, err := tape.GetAEmptySlot(config.syncTapeChange)
+	unloadTo, err := tape.GetAEmptySlot()
 	if err != nil {
 		return -1, err
 	}
@@ -361,43 +375,49 @@ Parameters:
 Return:
 	error: any error occured while execution, or nil
 */
-func (config *backUpconfig) writeOneFile(path string, fileheader os.FileInfo, fileReader *hdfs.FileReader) error {
-	tw := tar.NewWriter(config.TapeConfig.TapeWriter)
-
-	header := new(tar.Header)
-	header.Name = path
-	header.Size = fileheader.Size()
-	header.Mode = int64(fileheader.Mode())
-	header.ModTime = fileheader.ModTime()
-
-	if err := tw.WriteHeader(header); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+func (config *backUpconfig) writeOneFile(path string, fileheader os.FileInfo, fileReader *hdfs.FileReader, stopWriter chan error) error {
+	select {
+	case err := <-stopWriter:
 		return err
-	}
+	default:
 
-	if fileheader.Size() != 0 {
-		if _, err := io.Copy(config.TapeConfig.TapeWriter, fileReader); err != nil {
+		tw := tar.NewWriter(config.TapeConfig.TapeWriter)
+
+		header := new(tar.Header)
+		header.Name = path
+		header.Size = fileheader.Size()
+		header.Mode = int64(fileheader.Mode())
+		header.ModTime = fileheader.ModTime()
+
+		if err := tw.WriteHeader(header); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return err
 		}
 
-		// Pad to get the valid 512 block size of written data
-		config.TapeConfig.TapeWriter.Write(make([]byte, (512 - (config.TapeConfig.TapeWriter.Buffered() % 512))))
+		if fileheader.Size() != 0 {
+			if _, err := io.Copy(config.TapeConfig.TapeWriter, fileReader); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				return err
+			}
+
+			// Pad to get the valid 512 block size of written data
+			config.TapeConfig.TapeWriter.Write(make([]byte, (512 - (config.TapeConfig.TapeWriter.Buffered() % 512))))
+		}
+
+		config.TapeConfig.TapeWriter.Write(make([]byte, tarEndPad))
+
+		_, err := config.TapeConfig.TapeWriter.Write(make([]byte, config.TapeConfig.TapeWriter.Available()))
+		if err != nil {
+			return err
+		}
+
+		err = config.TapeConfig.FlushBuffers()
+		if err != nil {
+			return err
+		}
+
+		return nil
 	}
-
-	config.TapeConfig.TapeWriter.Write(make([]byte, tarEndPad))
-
-	_, err := config.TapeConfig.TapeWriter.Write(make([]byte, config.TapeConfig.TapeWriter.Available()))
-	if err != nil {
-		return err
-	}
-
-	err = config.TapeConfig.FlushBuffers()
-	if err != nil {
-		return err
-	}
-
-	return nil
 }
 
 /**
@@ -429,9 +449,12 @@ Parameters:
 */
 func (config *backUpconfig) cleanUp(poolID string) {
 
+	fmt.Println("Setting the member variable to true")
 	config.signalInterruptChan = true
 	<-config.makeJobClosed
+	fmt.Println("Received close make")
 	<-config.execJobClosed // TODO: Need to work on this
+	fmt.Println("Received close exec")
 
 	if err := config.DB.InterruptCloseJob(poolID); err != nil {
 		log.Println(err)
