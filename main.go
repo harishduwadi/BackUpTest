@@ -13,6 +13,8 @@ import (
 	"github.com/testusr/BackUpTest/db"
 )
 
+var activeThread int
+
 func main() {
 
 	backUpA := new(backUpconfig)
@@ -50,9 +52,6 @@ func main() {
 
 	cron := cron.New()
 
-	backUpA.syncMakeExecJob = &sync.Mutex{}
-	backUpB.syncMakeExecJob = &sync.Mutex{}
-
 	backUpA.syncTapeChange = &sync.Mutex{}
 	backUpB.syncTapeChange = backUpA.syncTapeChange
 
@@ -63,6 +62,7 @@ func main() {
 		<-c
 		cron.Stop()
 		backUpA.cleanUp(poolID)
+		fmt.Println("Closed first, now start closing the second backup")
 		backUpB.cleanUp(pairPoolID)
 		os.Exit(1)
 	}()
@@ -71,34 +71,30 @@ func main() {
 	jobType := "Hourly"
 
 	// Tests <------
-	sch1 := "00 * * * * *"
+	sch1 := "00 */01 * * * *"
 
 	arr := []string{"/ccr/2017", "/ccr/2018/07", "/ccr/2018/02", "/ccr/2018/"}
 	i := -1
 	j := -1
 
-	stopThreadA := false
-	stopThreadB := false
-
 	cron.AddFunc(sch1, func() {
-		if stopThreadA {
-			return
-		}
+		activeThread = activeThread + 1
+		defer func() {
+			activeThread = activeThread - 1
+		}()
+
 		i = (i + 1) % 4
-		err := cronJob(backUpA, arr[i], poolID, jobType, makeJobCompletedA)
-		if err != nil {
-			stopThreadA = true
-		}
+		cronJob(backUpA, arr[i], poolID, jobType, makeJobCompletedA)
+
 	})
 	cron.AddFunc(sch1, func() {
-		if stopThreadB {
-			return
-		}
+		activeThread = activeThread + 1
+		defer func() {
+			activeThread = activeThread - 1
+		}()
+
 		j = (j + 1) % 4
 		cronJob(backUpB, arr[j], pairPoolID, jobType, makeJobCompletedB)
-		if err != nil {
-			stopThreadA = true
-		}
 	})
 	// Tests <-------
 
@@ -109,12 +105,13 @@ func main() {
 	for {
 		// Do nothing
 		time.Sleep(20 * time.Second)
+		fmt.Println("Number of active threads", activeThread)
 		// Testing
 		if time.Now().In(time.UTC).After(currentTime.Add(30 * time.Minute)) {
 			return
 		}
 
-		if stopThreadA && stopThreadB {
+		if backUpA.errorInTape && backUpB.errorInTape {
 			return
 		}
 	}
@@ -141,13 +138,19 @@ func cronJob(backUp *backUpconfig, root string, poolID string, jobType string, m
 	backUp.syncMakeExecJob.Lock()
 	defer backUp.syncMakeExecJob.Unlock()
 
-	if backUp.signalInterruptChan {
+	if backUp.signalInterruptChan || backUp.errorInTape {
 		return nil
 	}
 
 	go backUp.makeJobs(poolID, jobType, makeJobCompleted, root)
 
 	if err := backUp.execJobs(poolID, makeJobCompleted); err != nil {
+		backUp.errorInTape = true
+		if backUp.signalInterruptChan {
+			fmt.Println(poolID, ": Found the error return from execJob. Passing channel")
+			backUp.execJobClosed <- 1
+		}
+		fmt.Println(poolID, "In main cronJob function", err)
 		return err
 	}
 
@@ -169,6 +172,13 @@ func setupBackupConfig(config *backUpconfig, poolID string) error {
 	if err != nil {
 		return err
 	}
+	config.syncMakeExecJob = &sync.Mutex{}
+
+	config.execJobClosed = make(chan int)
+
+	config.errorInTape = false
+	config.signalInterruptChan = false
+
 	return nil
 }
 

@@ -35,8 +35,8 @@ type backUpconfig struct {
 	syncMakeExecJob     *sync.Mutex
 	syncTapeChange      *sync.Mutex
 	signalInterruptChan bool
-	makeJobClosed       chan int
 	execJobClosed       chan int
+	errorInTape         bool
 }
 
 /**
@@ -51,15 +51,14 @@ func (config *backUpconfig) makeJobs(poolID string, jobType string, makeJobCompl
 			return err
 		}
 		if config.signalInterruptChan {
-			fmt.Println("make Job Closed signal sending")
-			config.makeJobClosed <- 1
-			fmt.Println("make Job Closed signal sent")
+			fmt.Println(root, poolID, ": Found Close Interrupt Flag, Now Return Error")
 			return errors.New("Signal Interrupt")
 		}
 		// Each Job is a directory in HDFS
 		if !info.IsDir() {
 			return nil
 		}
+		// fmt.Println(config.TapeConfig.TapePath, "Path", path)
 		pathspecid, schedule, err := config.DB.GetPathSpec(path)
 		if err != nil {
 			return err
@@ -74,6 +73,7 @@ func (config *backUpconfig) makeJobs(poolID string, jobType string, makeJobCompl
 		}
 		return nil
 	})
+	fmt.Println("Done with the makeJob, now returning", err, "through channel")
 	if err != nil {
 		makeJobCompleted <- err
 	}
@@ -103,15 +103,14 @@ func (config *backUpconfig) execJobs(poolID string, makeJobCompleted chan error)
 	// forever loop below
 	go func() {
 		errorMakingJobs = <-makeJobCompleted
+		fmt.Println(poolID, ": Caught the signal from the makeJob")
 		jobCreationCompleted = true
 	}()
 
 	for {
 
 		if errorMakingJobs != nil {
-			if config.signalInterruptChan {
-				stopWrite <- errors.New("Signal Interrupt")
-			}
+			fmt.Println(poolID, ": Found the error made from makeJob. Now Return Error")
 			return errorMakingJobs
 		}
 
@@ -127,7 +126,8 @@ func (config *backUpconfig) execJobs(poolID string, makeJobCompleted chan error)
 		if err != nil {
 			return err
 		}
-		if jobCreationCompleted && aJob == nil {
+		if errorMakingJobs == nil && jobCreationCompleted && aJob == nil {
+			fmt.Println("Returning nil-- no job and none will be made")
 			return nil
 		}
 		// Continue the loop until makeJob routine adds a job to DB or sends complete signal
@@ -144,9 +144,6 @@ func (config *backUpconfig) execJobs(poolID string, makeJobCompleted chan error)
 			updateErr := config.DB.UpdateJob(aJob.ID, aJob.Name, startTime, duration, numOfFiles, pgdb.States.InComplete, aJob.PoolID)
 			if updateErr != nil {
 				return updateErr
-			}
-			if config.signalInterruptChan && strings.Contains(err.Error(), "Signal Interrupt") {
-				config.execJobClosed <- 1
 			}
 			return err
 		}
@@ -187,6 +184,13 @@ func (config *backUpconfig) execSingleJob(jobID int, path string, tapeID int, po
 	}
 
 	for _, fileInfo := range allFiles {
+
+		if config.signalInterruptChan {
+			fmt.Println(poolID, "Found signal flag while going through file, Now Return Error")
+			err := errors.New("Signal Interrupt")
+			return filesAdded, err
+		}
+
 		if !config.checkBackUpNeeded(fileInfo, lastExecTime) {
 			continue
 		}
@@ -376,48 +380,44 @@ Return:
 	error: any error occured while execution, or nil
 */
 func (config *backUpconfig) writeOneFile(path string, fileheader os.FileInfo, fileReader *hdfs.FileReader, stopWriter chan error) error {
-	select {
-	case err := <-stopWriter:
+
+	tw := tar.NewWriter(config.TapeConfig.TapeWriter)
+
+	header := new(tar.Header)
+	header.Name = path
+	header.Size = fileheader.Size()
+	header.Mode = int64(fileheader.Mode())
+	header.ModTime = fileheader.ModTime()
+
+	if err := tw.WriteHeader(header); err != nil {
+		fmt.Fprintln(os.Stderr, err)
 		return err
-	default:
+	}
 
-		tw := tar.NewWriter(config.TapeConfig.TapeWriter)
-
-		header := new(tar.Header)
-		header.Name = path
-		header.Size = fileheader.Size()
-		header.Mode = int64(fileheader.Mode())
-		header.ModTime = fileheader.ModTime()
-
-		if err := tw.WriteHeader(header); err != nil {
+	if fileheader.Size() != 0 {
+		if _, err := io.Copy(config.TapeConfig.TapeWriter, fileReader); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return err
 		}
 
-		if fileheader.Size() != 0 {
-			if _, err := io.Copy(config.TapeConfig.TapeWriter, fileReader); err != nil {
-				fmt.Fprintln(os.Stderr, err)
-				return err
-			}
-
-			// Pad to get the valid 512 block size of written data
-			config.TapeConfig.TapeWriter.Write(make([]byte, (512 - (config.TapeConfig.TapeWriter.Buffered() % 512))))
-		}
-
-		config.TapeConfig.TapeWriter.Write(make([]byte, tarEndPad))
-
-		_, err := config.TapeConfig.TapeWriter.Write(make([]byte, config.TapeConfig.TapeWriter.Available()))
-		if err != nil {
-			return err
-		}
-
-		err = config.TapeConfig.FlushBuffers()
-		if err != nil {
-			return err
-		}
-
-		return nil
+		// Pad to get the valid 512 block size of written data
+		config.TapeConfig.TapeWriter.Write(make([]byte, (512 - (config.TapeConfig.TapeWriter.Buffered() % 512))))
 	}
+
+	config.TapeConfig.TapeWriter.Write(make([]byte, tarEndPad))
+
+	_, err := config.TapeConfig.TapeWriter.Write(make([]byte, config.TapeConfig.TapeWriter.Available()))
+	if err != nil {
+		return err
+	}
+
+	err = config.TapeConfig.FlushBuffers()
+	if err != nil {
+		return err
+	}
+
+	return nil
+
 }
 
 /**
@@ -449,18 +449,17 @@ Parameters:
 */
 func (config *backUpconfig) cleanUp(poolID string) {
 
-	fmt.Println("Setting the member variable to true")
 	config.signalInterruptChan = true
-	<-config.makeJobClosed
-	fmt.Println("Received close make")
-	<-config.execJobClosed // TODO: Need to work on this
-	fmt.Println("Received close exec")
+	if activeThread > 0 {
+		fmt.Println(activeThread)
+		<-config.execJobClosed // TODO: Need to work on this
+		fmt.Println(config.TapeConfig.TapePath, "Received close exec")
+	}
 
 	if err := config.DB.InterruptCloseJob(poolID); err != nil {
 		log.Println(err)
 	}
 
-	config.TapeConfig.WriteEOF()
 	config.TapeConfig.CloseTape()
 	config.DB.Close()
 	config.Client.Close()
