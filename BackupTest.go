@@ -421,13 +421,11 @@ func (config *backUpconfig) writeOneFile(path string, fileheader os.FileInfo, fi
 	header.ModTime = fileheader.ModTime()
 
 	if err := tw.WriteHeader(header); err != nil {
-		fmt.Fprintln(os.Stderr, err)
 		return err
 	}
 
 	if fileheader.Size() != 0 {
 		if _, err := io.Copy(config.TapeConfig.TapeWriter, fileReader); err != nil {
-			fmt.Fprintln(os.Stderr, err)
 			return err
 		}
 
@@ -463,7 +461,6 @@ Return:
 func (config *backUpconfig) setUpTape(poolID string) error {
 	tapePath, err := config.DB.GetStoragePath(poolID)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
 		return err
 	}
 	config.TapeConfig, err = tape.New(tapePath, recordSize)

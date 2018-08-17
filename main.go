@@ -16,7 +16,7 @@ import (
 var activeThreads int
 
 var schedules = map[string]string{
-	"2Mins": "00 */01 * * * *",
+	"2Mins": "00 */02 * * * *",
 	//"Hourly":  "00 00 * * * *",
 	//"Daily":   "00 00 23 * * *",
 	//"Monthly": "00 00 23 1 * *",
@@ -140,8 +140,10 @@ func cronJob(backUp *backUpconfig, root string, poolID string, jobType string, m
 
 	if err := backUp.execJobs(poolID, makeJobCompleted); err != nil {
 		fmt.Println(poolID, err)
-		backUp.execJobClosed <- 1
+		upderr := backUp.DB.UpdateErrorInTapeReason(poolID, err.Error())
+		fmt.Println(upderr)
 		// Update the tape stating that there was an error in the tape
+		backUp.execJobClosed <- 1
 		return err
 	}
 

@@ -2,6 +2,7 @@ package tape
 
 import (
 	"bytes"
+	"errors"
 	"os/exec"
 	"strconv"
 )
@@ -15,7 +16,7 @@ func Unload(driveNum int, slotNum int) error {
 	cmd.Stderr = &errorMessg
 	err := cmd.Run()
 	if err != nil {
-		return err
+		return errors.New(errorMessg.String())
 	}
 	return nil
 }
@@ -30,7 +31,7 @@ func GetMTXStatus() (string, error) {
 	cmd.Stderr = &errorMessg
 	err := cmd.Run()
 	if err != nil {
-		return "", err
+		return "", errors.New(errorMessg.String())
 	}
 
 	return out.String(), nil
@@ -47,7 +48,7 @@ func Load(driveNum int, slotNum int) error {
 	cmd.Stderr = &errorMessg
 	err := cmd.Run()
 	if err != nil {
-		return err
+		return errors.New(errorMessg.String())
 	}
 	return nil
 }

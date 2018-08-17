@@ -48,6 +48,23 @@ func init() {
 	States.InComplete = "InComplete"
 }
 
+func (db *DBConn) UpdateErrorInTapeReason(poolID string, reason string) error {
+	query := "SELECT storage.tapeid FROM pool join storage on storage.id=pool.storageid WHERE pool.id=$1"
+	row := db.DBSql.QueryRow(query, poolID)
+	var tapeID int
+	err := row.Scan(&tapeID)
+	if err != nil {
+		return err
+	}
+
+	query = "Update Tape set errorinTape=true, errorreason=$2 where id=$1"
+	_, err = db.DBSql.Exec(query, poolID, reason)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
 /**
 Description:
 	This method is used to update the tape table after tape has been changed.
