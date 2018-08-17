@@ -100,7 +100,6 @@ func main() {
 			cronJob(backUpB, arr[j], pairPoolID, key, makeJobCompletedB)
 		})
 	}
-	// Tests <-------
 
 	cron.Start()
 
@@ -133,12 +132,16 @@ func cronJob(backUp *backUpconfig, root string, poolID string, jobType string, m
 	backUp.syncMakeExecJob.Lock()
 	defer backUp.syncMakeExecJob.Unlock()
 
+	if backUp.signalInterruptChan {
+		return nil
+	}
+
 	go backUp.makeJobs(poolID, jobType, makeJobCompleted, root)
 
 	if err := backUp.execJobs(poolID, makeJobCompleted); err != nil {
 		fmt.Println(poolID, err)
 		backUp.execJobClosed <- 1
-
+		// Update the tape stating that there was an error in the tape
 		return err
 	}
 
@@ -158,7 +161,7 @@ Retur:
 func setupBackupConfig(config *backUpconfig, poolID string) error {
 	var err error
 	config.DB, err = pgdb.New()
-	if config.DB == nil {
+	if err != nil {
 		return err
 	}
 	config.Client, err = hdfs.New("us-lax-9a-ym-00:8020")

@@ -144,10 +144,6 @@ func (config *backUpconfig) execJobs(poolID string, makeJobCompleted chan error)
 			if updateErr != nil {
 				return updateErr
 			}
-			// Before returning-- need to make sure makeJob has also ended.
-			if config.signalInterruptChan {
-				return err
-			}
 			return err
 		}
 		err = config.DB.UpdateJob(aJob.ID, aJob.Name, startTime, duration, numOfFiles, pgdb.States.Complete, aJob.PoolID)
@@ -366,7 +362,7 @@ func (config *backUpconfig) unloadAndUpdate(driveNum int, unloadTo int, tapeID i
 		return err
 	}
 
-	err = config.DB.UpdateTapeTable(unloadTo, true, true, tapeID)
+	err = config.DB.UpdateTapeTable(unloadTo, true, false, tapeID)
 	if err != nil {
 		return err
 	}

@@ -54,9 +54,9 @@ Description:
 Parameter:
 	The attributes of the tape table
 */
-func (db *DBConn) UpdateTapeTable(slotNum int, isFull bool, validData bool, ID int) error {
-	query := "UPDATE TAPE SET slotnumber=$1, isfull=$2, hasvaliddata=$3 where id=$4"
-	_, err := db.DBSql.Exec(query, slotNum, isFull, validData, ID)
+func (db *DBConn) UpdateTapeTable(slotNum int, isFull bool, errorinTape bool, ID int) error {
+	query := "UPDATE TAPE SET slotnumber=$1, isfull=$2, errorintape=$3 where id=$4"
+	_, err := db.DBSql.Exec(query, slotNum, isFull, errorinTape, ID)
 	if err != nil {
 		return err
 	}
@@ -122,7 +122,7 @@ Return:
 */
 func (db *DBConn) GetTapeFromPool(poolID string) (int, int, error) {
 	query := `SELECT slotnumber, id FROM Tape 
-	WHERE poolid=$1 AND slotnumber <> 0 AND isFull=false AND hasvaliddata=false ORDER BY name`
+	WHERE poolid=$1 AND slotnumber <> 0 AND isFull=false AND errorintape=false ORDER BY name`
 
 	row := db.DBSql.QueryRow(query, poolID)
 
