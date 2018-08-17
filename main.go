@@ -13,7 +13,15 @@ import (
 	"github.com/testusr/BackUpTest/db"
 )
 
-var activeThread int
+var activeThreads int
+
+var schedules = map[string]string{
+	"2Mins": "00 */01 * * * *",
+	//"Hourly":  "00 00 * * * *",
+	//"Daily":   "00 00 23 * * *",
+	//"Monthly": "00 00 23 1 * *",
+	//"Yearly":  "00 00 23 1 1 *",
+}
 
 func main() {
 
@@ -62,40 +70,36 @@ func main() {
 		<-c
 		cron.Stop()
 		backUpA.cleanUp(poolID)
-		fmt.Println("Closed first, now start closing the second backup")
 		backUpB.cleanUp(pairPoolID)
 		os.Exit(1)
 	}()
 
-	// Schedular is the one that sets the jobType later
-	jobType := "Hourly"
-
-	// Tests <------
-	sch1 := "00 */01 * * * *"
-
-	arr := []string{"/ccr/2017", "/ccr/2018/07", "/ccr/2018/02", "/ccr/2018/"}
+	arr := []string{"/ccr/2017", "/ccr/2018/07", "/ccr/2018/02", "/ccr/2018"}
 	i := -1
 	j := -1
+	// For Testing Purpose
 
-	cron.AddFunc(sch1, func() {
-		activeThread = activeThread + 1
-		defer func() {
-			activeThread = activeThread - 1
-		}()
+	for key, val := range schedules {
+		cron.AddFunc(val, func() {
+			activeThreads = activeThreads + 1
+			defer func() {
+				activeThreads = activeThreads - 1
+			}()
 
-		i = (i + 1) % 4
-		cronJob(backUpA, arr[i], poolID, jobType, makeJobCompletedA)
+			i = (i + 1) % 4
+			cronJob(backUpA, arr[i], poolID, key, makeJobCompletedA)
 
-	})
-	cron.AddFunc(sch1, func() {
-		activeThread = activeThread + 1
-		defer func() {
-			activeThread = activeThread - 1
-		}()
+		})
+		cron.AddFunc(val, func() {
+			activeThreads = activeThreads + 1
+			defer func() {
+				activeThreads = activeThreads - 1
+			}()
 
-		j = (j + 1) % 4
-		cronJob(backUpB, arr[j], pairPoolID, jobType, makeJobCompletedB)
-	})
+			j = (j + 1) % 4
+			cronJob(backUpB, arr[j], pairPoolID, key, makeJobCompletedB)
+		})
+	}
 	// Tests <-------
 
 	cron.Start()
@@ -105,13 +109,8 @@ func main() {
 	for {
 		// Do nothing
 		time.Sleep(20 * time.Second)
-		fmt.Println("Number of active threads", activeThread)
 		// Testing
 		if time.Now().In(time.UTC).After(currentTime.Add(30 * time.Minute)) {
-			return
-		}
-
-		if backUpA.errorInTape && backUpB.errorInTape {
 			return
 		}
 	}
@@ -122,35 +121,24 @@ Description:
 	This function represents a specific type of backup: hourly, monthly... , which is specified by the parameter
 	jobType
 Parameters:
-	mutex: represents the mutex that is used to synchronize the go routine that will add Jobs to the DB among the
-		the different cronJob go routines.
+	backUp: represents the struct that has all the resources for backing up
 	root: represents the root path which is walked by hdfs filepath.walk method
-	client: represents the connection to the yarn hdfs
-	db: package that is used to connect to the postgres DB and also perform db operations
 	poolID: represents the type of backup (with respect to the tapes) being done
 	jobType: reprents the type of backup that is ran from the cronJob schedular
 	makeJobCompleted: represents the channel that is used for communcation betweeen the makeJob and execJob go routines
-	tapeconfig: package that is used to perform tape operations
 */
 func cronJob(backUp *backUpconfig, root string, poolID string, jobType string, makeJobCompleted chan error) error {
 
-	// Only one cronJob will run at a time
+	// Run only one cron Job of one pool type at a time
 	backUp.syncMakeExecJob.Lock()
 	defer backUp.syncMakeExecJob.Unlock()
-
-	if backUp.signalInterruptChan || backUp.errorInTape {
-		return nil
-	}
 
 	go backUp.makeJobs(poolID, jobType, makeJobCompleted, root)
 
 	if err := backUp.execJobs(poolID, makeJobCompleted); err != nil {
-		backUp.errorInTape = true
-		if backUp.signalInterruptChan {
-			fmt.Println(poolID, ": Found the error return from execJob. Passing channel")
-			backUp.execJobClosed <- 1
-		}
-		fmt.Println(poolID, "In main cronJob function", err)
+		fmt.Println(poolID, err)
+		backUp.execJobClosed <- 1
+
 		return err
 	}
 
@@ -158,6 +146,15 @@ func cronJob(backUp *backUpconfig, root string, poolID string, jobType string, m
 
 }
 
+/**
+Description:
+	This function is used to set the member variable of the bakup config struct
+Parameter:
+	config: The backup config struct whose member that needs set up
+	poolID: PoolID whose tapes needs to be set up in config struct
+Retur:
+	Error if any
+*/
 func setupBackupConfig(config *backUpconfig, poolID string) error {
 	var err error
 	config.DB, err = pgdb.New()
@@ -176,12 +173,17 @@ func setupBackupConfig(config *backUpconfig, poolID string) error {
 
 	config.execJobClosed = make(chan int)
 
-	config.errorInTape = false
 	config.signalInterruptChan = false
 
 	return nil
 }
 
+/**
+Description:
+	This function is used to close the resources that were open during execution
+Parameter:
+	config: The struct whose resources needs closing
+*/
 func closeAll(config *backUpconfig) {
 	if config.DB != nil {
 		config.DB.Close()

@@ -36,7 +36,6 @@ type backUpconfig struct {
 	syncTapeChange      *sync.Mutex
 	signalInterruptChan bool
 	execJobClosed       chan int
-	errorInTape         bool
 }
 
 /**
@@ -51,14 +50,12 @@ func (config *backUpconfig) makeJobs(poolID string, jobType string, makeJobCompl
 			return err
 		}
 		if config.signalInterruptChan {
-			fmt.Println(root, poolID, ": Found Close Interrupt Flag, Now Return Error")
 			return errors.New("Signal Interrupt")
 		}
 		// Each Job is a directory in HDFS
 		if !info.IsDir() {
 			return nil
 		}
-		// fmt.Println(config.TapeConfig.TapePath, "Path", path)
 		pathspecid, schedule, err := config.DB.GetPathSpec(path)
 		if err != nil {
 			return err
@@ -73,7 +70,6 @@ func (config *backUpconfig) makeJobs(poolID string, jobType string, makeJobCompl
 		}
 		return nil
 	})
-	fmt.Println("Done with the makeJob, now returning", err, "through channel")
 	if err != nil {
 		makeJobCompleted <- err
 	}
@@ -90,27 +86,29 @@ Return:
 */
 func (config *backUpconfig) execJobs(poolID string, makeJobCompleted chan error) error {
 
-	if err := config.TapeConfig.JumpToEOM(); err != nil {
-		return err
-	}
-
-	stopWrite := make(chan error)
-
 	jobCreationCompleted := false
 	var errorMakingJobs error
+	waitForMakeJob := make(chan int)
+
+	defer func() {
+		<-waitForMakeJob
+	}()
 
 	// This go routine waits for the completion of makeJob go routine, check to end the
 	// forever loop below
 	go func() {
 		errorMakingJobs = <-makeJobCompleted
-		fmt.Println(poolID, ": Caught the signal from the makeJob")
 		jobCreationCompleted = true
+		waitForMakeJob <- 1
 	}()
+
+	if err := config.TapeConfig.JumpToEOM(); err != nil {
+		return err
+	}
 
 	for {
 
 		if errorMakingJobs != nil {
-			fmt.Println(poolID, ": Found the error made from makeJob. Now Return Error")
 			return errorMakingJobs
 		}
 
@@ -121,13 +119,14 @@ func (config *backUpconfig) execJobs(poolID string, makeJobCompleted chan error)
 			return err
 		}
 
-		// Get one (currently any)initialized Job from the DB
+		// Get one (currently any) initialized Job from the DB
 		aJob, err := config.DB.GetAJob(poolID, startTime)
 		if err != nil {
 			return err
 		}
+
+		// If there is no error, and all the jobs has been executed return nil
 		if errorMakingJobs == nil && jobCreationCompleted && aJob == nil {
-			fmt.Println("Returning nil-- no job and none will be made")
 			return nil
 		}
 		// Continue the loop until makeJob routine adds a job to DB or sends complete signal
@@ -136,7 +135,7 @@ func (config *backUpconfig) execJobs(poolID string, makeJobCompleted chan error)
 		}
 
 		// Set up the writing of the acquired Job
-		numOfFiles, err := config.execSingleJob(aJob.ID, aJob.Name, tapeID, poolID, stopWrite)
+		numOfFiles, err := config.execSingleJob(aJob.ID, aJob.Name, tapeID, poolID)
 
 		duration := time.Now().In(time.UTC).Sub(startTime)
 
@@ -144,6 +143,10 @@ func (config *backUpconfig) execJobs(poolID string, makeJobCompleted chan error)
 			updateErr := config.DB.UpdateJob(aJob.ID, aJob.Name, startTime, duration, numOfFiles, pgdb.States.InComplete, aJob.PoolID)
 			if updateErr != nil {
 				return updateErr
+			}
+			// Before returning-- need to make sure makeJob has also ended.
+			if config.signalInterruptChan {
+				return err
 			}
 			return err
 		}
@@ -163,7 +166,7 @@ Return:
 	int: number of files that was written to the tape
 	error: any error occured while execution, or nil
 */
-func (config *backUpconfig) execSingleJob(jobID int, path string, tapeID int, poolID string, stopWrite chan error) (int, error) {
+func (config *backUpconfig) execSingleJob(jobID int, path string, tapeID int, poolID string) (int, error) {
 
 	filesAdded := 0
 	allFiles, err := config.Client.ReadDir(path)
@@ -186,7 +189,6 @@ func (config *backUpconfig) execSingleJob(jobID int, path string, tapeID int, po
 	for _, fileInfo := range allFiles {
 
 		if config.signalInterruptChan {
-			fmt.Println(poolID, "Found signal flag while going through file, Now Return Error")
 			err := errors.New("Signal Interrupt")
 			return filesAdded, err
 		}
@@ -202,8 +204,8 @@ func (config *backUpconfig) execSingleJob(jobID int, path string, tapeID int, po
 			return filesAdded, err
 		}
 
-		// Stream hdfs reader to the tape writer
-		err = config.writeOneFile(fullPath, fileInfo, fileReader, stopWrite)
+		// Call writeOneFile function that streams bytes from hdfs to tape
+		err = config.writeOneFile(fullPath, fileInfo, fileReader)
 		if err != nil {
 			if !strings.Contains(err.Error(), "no space left on device") {
 				return filesAdded, err
@@ -211,13 +213,12 @@ func (config *backUpconfig) execSingleJob(jobID int, path string, tapeID int, po
 
 			newTapeID, err := config.changeTape(poolID)
 			if err != nil {
-				fmt.Println(err)
 				return filesAdded, err
 			}
 
 			fileReader.Close()
 
-			err = config.restartJob(fullPath, fileInfo, path, jobID, newTapeID, stopWrite)
+			err = config.restartJob(fullPath, fileInfo, path, jobID, newTapeID)
 			if err != nil {
 				return filesAdded, err
 			}
@@ -241,13 +242,22 @@ func (config *backUpconfig) execSingleJob(jobID int, path string, tapeID int, po
 	return filesAdded, nil
 }
 
-func (config *backUpconfig) restartJob(fullPath string, fileInfo os.FileInfo, path string, jobID int, newTapeID int, stopWrite chan error) error {
+/**
+Description:
+	This function restarts the writing to the tape for a specific file. This function is called when tape has just been changed
+	and complete file needs to be backed up to the tape
+Parameter:
+	(see cronJob)
+Return:
+	error if any
+*/
+func (config *backUpconfig) restartJob(fullPath string, fileInfo os.FileInfo, path string, jobID int, newTapeID int) error {
 	fileReader, err := config.Client.Open(fullPath)
 	if err != nil {
 		return err
 	}
 
-	err = config.writeOneFile(fullPath, fileInfo, fileReader, stopWrite)
+	err = config.writeOneFile(fullPath, fileInfo, fileReader)
 	if err != nil {
 		return err
 	}
@@ -258,6 +268,15 @@ func (config *backUpconfig) restartJob(fullPath string, fileInfo os.FileInfo, pa
 	return nil
 }
 
+/**
+Description:
+	This function changes the tape whose poolID is sent as parameter
+Parameter:
+	The poolID that needs tape replacement
+Return:
+	int: new Tape's Id
+	error if any
+*/
 func (config *backUpconfig) changeTape(poolID string) (int, error) {
 
 	config.syncTapeChange.Lock()
@@ -297,6 +316,16 @@ func (config *backUpconfig) changeTape(poolID string) (int, error) {
 	return newTapeID, nil
 }
 
+/**
+Description:
+	This function loads a new tape to the tape drive, and updates the changes to the DB
+Parameter:
+	driveNum: Where the tape needs to be loaded
+	fromSlot: Where the tape is taken from
+	tapeID: The ID of the tape placed in the drive in the DB
+Return:
+	error if any
+*/
 func (config *backUpconfig) loadAndUpdate(driveNum int, fromSlot int, newTapeID int) error {
 	err := tape.Load(driveNum, fromSlot)
 	if err != nil {
@@ -321,6 +350,16 @@ func (config *backUpconfig) loadAndUpdate(driveNum int, fromSlot int, newTapeID 
 	return nil
 }
 
+/**
+Description:
+	This function unloads a tape to the tape drive, and updates the changes to the DB
+Parameter:
+	driveNum: Where the tape needs to be unloaded
+	fromSlot: Where the tape is placed
+	tapeID: The ID of the tape being taken out in the DB
+Return:
+	error if any
+*/
 func (config *backUpconfig) unloadAndUpdate(driveNum int, unloadTo int, tapeID int) error {
 	err := tape.Unload(driveNum, unloadTo)
 	if err != nil {
@@ -354,17 +393,13 @@ func (config *backUpconfig) checkBackUpNeeded(fileInfo os.FileInfo, lastExecTime
 	if fileInfo.IsDir() {
 		return false
 	}
-	// Checking Full BackUp with DB
-	if fileInfo.Size() > 8000000 {
+	// Only for testing purpose
+	if fileInfo.Size() > 12000000 {
 		return false
 	}
 	if (fileInfo.ModTime().In(time.UTC)).Before(lastExecTime) {
 		return false
 	}
-	// TODO need another check that looks if the last backup of certain file
-	// is before the retention period (or in other words, when we change the tape,
-	// we need to make sure that first backup is full backup)
-	// OR Create another cron Job that doesn't check the time
 	return true
 }
 
@@ -379,7 +414,7 @@ Parameters:
 Return:
 	error: any error occured while execution, or nil
 */
-func (config *backUpconfig) writeOneFile(path string, fileheader os.FileInfo, fileReader *hdfs.FileReader, stopWriter chan error) error {
+func (config *backUpconfig) writeOneFile(path string, fileheader os.FileInfo, fileReader *hdfs.FileReader) error {
 
 	tw := tar.NewWriter(config.TapeConfig.TapeWriter)
 
@@ -424,7 +459,7 @@ func (config *backUpconfig) writeOneFile(path string, fileheader os.FileInfo, fi
 Description:
 	This function gets the address of the tape in the /dev/ directory and opens tape for use
 Parameters:
-	(See cronJob)
+	PoolID: Which pool tape needs to be set
 Return:
 	tape.Config: represents the struct that will be used perform tape operations
 	error: any error occured while execution, or nil
@@ -445,15 +480,13 @@ Description:
 		- Closes all the open resources
 		- Changes the State of the in-progrss job to interrupted
 Parameters:
-	(See cronJob)
+	PoolID: Which backup pool needs to be closed
 */
 func (config *backUpconfig) cleanUp(poolID string) {
 
 	config.signalInterruptChan = true
-	if activeThread > 0 {
-		fmt.Println(activeThread)
-		<-config.execJobClosed // TODO: Need to work on this
-		fmt.Println(config.TapeConfig.TapePath, "Received close exec")
+	if activeThreads > 0 {
+		<-config.execJobClosed
 	}
 
 	if err := config.DB.InterruptCloseJob(poolID); err != nil {

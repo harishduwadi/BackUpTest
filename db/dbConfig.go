@@ -51,6 +51,8 @@ func init() {
 /**
 Description:
 	This method is used to update the tape table after tape has been changed.
+Parameter:
+	The attributes of the tape table
 */
 func (db *DBConn) UpdateTapeTable(slotNum int, isFull bool, validData bool, ID int) error {
 	query := "UPDATE TAPE SET slotnumber=$1, isfull=$2, hasvaliddata=$3 where id=$4"
@@ -64,6 +66,8 @@ func (db *DBConn) UpdateTapeTable(slotNum int, isFull bool, validData bool, ID i
 /**
 Description:
 	This method is used to update the storage table after the tape has been changed
+Parameter:
+	The attributes of the storage table
 */
 func (db *DBConn) UpdateStorage(tapeID int, name string) error {
 	if tapeID < 0 {
@@ -86,6 +90,12 @@ func (db *DBConn) UpdateStorage(tapeID int, name string) error {
 Description:
 	This method is used to the retrieve tapeID and the drive num of the
 	tape at path "tapePath"
+Parameter:
+	The path of the drive whose infor we need
+Return:
+	The driveNum it correspondes to
+	The id of the tape
+	error if any
 */
 func (db *DBConn) GetTapeInfo(tapePath string) (int, int, error) {
 	query := "Select drivenumber, tapeid From storage where name=$1"
@@ -102,7 +112,13 @@ func (db *DBConn) GetTapeInfo(tapePath string) (int, int, error) {
 
 /**
 Description:
-	This method is used to get other tapes from certain pool
+	This method is used to get another tape from certain pool
+Parameter:
+	PoolID: The pool from where we need additional tape
+Return:
+	The slot where the additional tape resides
+	The tapeID of the tape
+	error if any
 */
 func (db *DBConn) GetTapeFromPool(poolID string) (int, int, error) {
 	query := `SELECT slotnumber, id FROM Tape 
@@ -142,7 +158,7 @@ func (db *DBConn) GetPathSpec(path string) (int, string, error) {
 	err := row.Scan(&id, &schedule)
 	if err == sql.ErrNoRows {
 		// Need to make sure pathspec table has unique flag on for name
-		err = db.AddPathSpec(path, "Hourly")
+		err = db.AddPathSpec(path, "2Mins") // Yearly would be better??
 		if err != nil {
 			return -1, "", err
 		}
@@ -280,7 +296,6 @@ func (db *DBConn) GetStoragePath(poolID string) (string, error) {
 			return "", err
 		}
 	} else {
-		// TODO when the tape is not loaded into the tape drive ??
 		return "", errors.New(`Tape From That Pool Is Not Loaded Or the DB is Not Updated! 
 		Please load the Tape and update the DB`)
 	}
@@ -368,8 +383,9 @@ func (db *DBConn) AddFile(fileName string, jobID int, tapeID int, fileMarkNum in
 }
 
 /**
-This function is used to get the tape from the pool that is for different location,
-so that we can simultaneously write on both tapes
+Description:
+	This function is used to get the tape from the pool that is for different location,
+	so that we can simultaneously write on both tapes
 Parameter:
 	poolID: The pool where we'll user chose to write
 Return:
