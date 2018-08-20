@@ -4,8 +4,10 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io/ioutil"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/lib/pq"
@@ -58,7 +60,7 @@ func (db *DBConn) UpdateErrorInTapeReason(poolID string, reason string) error {
 	}
 
 	query = "Update Tape set errorinTape=true, errorreason=$2 where id=$1"
-	_, err = db.DBSql.Exec(query, poolID, reason)
+	_, err = db.DBSql.Exec(query, tapeID, reason)
 	if err != nil {
 		return err
 	}
@@ -432,7 +434,13 @@ func (db *DBConn) GetPair(poolID string) (string, error) {
 Description: This method is used to connect to the pg server
 */
 func New() (*DBConn, error) {
-	connStr := "user=admin password=password dbname=backupTest"
+	bytesRead, err := ioutil.ReadFile("dbAuthen.txt")
+	if err != nil {
+		return nil, err
+	}
+	auth := string(bytesRead)
+	autharr := strings.Split(auth, " ")
+	connStr := "user=" + autharr[0] + " password=" + autharr[1] + " dbname=" + autharr[2]
 
 	db, err := sql.Open("postgres", connStr)
 	if err != nil {

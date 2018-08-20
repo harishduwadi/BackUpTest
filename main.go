@@ -39,7 +39,9 @@ func main() {
 
 	err = setupBackupConfig(backUpA, poolID)
 	if err != nil {
+		fmt.Println(err)
 		closeAll(backUpA)
+		return
 	}
 	defer closeAll(backUpA)
 
@@ -51,6 +53,7 @@ func main() {
 	err = setupBackupConfig(backUpB, pairPoolID)
 	if err != nil {
 		closeAll(backUpB)
+		return
 	}
 	defer closeAll(backUpB)
 
@@ -109,7 +112,7 @@ func main() {
 		// Do nothing
 		time.Sleep(20 * time.Second)
 		// Testing
-		if time.Now().In(time.UTC).After(currentTime.Add(30 * time.Minute)) {
+		if time.Now().In(time.UTC).After(currentTime.Add(60 * time.Minute)) {
 			return
 		}
 	}
@@ -140,8 +143,7 @@ func cronJob(backUp *backUpconfig, root string, poolID string, jobType string, m
 
 	if err := backUp.execJobs(poolID, makeJobCompleted); err != nil {
 		fmt.Println(poolID, err)
-		upderr := backUp.DB.UpdateErrorInTapeReason(poolID, err.Error())
-		fmt.Println(upderr)
+		backUp.DB.UpdateErrorInTapeReason(poolID, err.Error())
 		// Update the tape stating that there was an error in the tape
 		backUp.execJobClosed <- 1
 		return err
