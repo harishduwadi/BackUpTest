@@ -115,6 +115,10 @@ func main() {
 		if time.Now().In(time.UTC).After(currentTime.Add(60 * time.Minute)) {
 			return
 		}
+
+		if backUpA.errorEncountered && backUpB.errorEncountered {
+			return
+		}
 	}
 }
 
@@ -144,6 +148,7 @@ func cronJob(backUp *backUpconfig, root string, poolID string, jobType string, m
 	if err := backUp.execJobs(poolID, makeJobCompleted); err != nil {
 		fmt.Println(poolID, err)
 		backUp.DB.UpdateErrorInTapeReason(poolID, err.Error())
+		backUp.errorEncountered = true
 		// Update the tape stating that there was an error in the tape
 		backUp.execJobClosed <- 1
 		return err

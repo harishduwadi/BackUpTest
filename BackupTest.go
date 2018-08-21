@@ -36,6 +36,7 @@ type backUpconfig struct {
 	syncTapeChange      *sync.Mutex
 	signalInterruptChan bool
 	execJobClosed       chan int
+	errorEncountered    bool
 }
 
 /**
@@ -304,7 +305,7 @@ func (config *backUpconfig) changeTape(poolID string) (int, error) {
 
 	err = config.loadAndUpdate(driveNum, fromSlot, newTapeID)
 	if err != nil {
-		return 0, err
+		return -1, err
 	}
 
 	config.TapeConfig.RetensionOfTape()
@@ -390,7 +391,7 @@ func (config *backUpconfig) checkBackUpNeeded(fileInfo os.FileInfo, lastExecTime
 		return false
 	}
 	// Only for testing purpose
-	if fileInfo.Size() > 12000000 {
+	if fileInfo.Size() > 15000000 {
 		return false
 	}
 	if (fileInfo.ModTime().In(time.UTC)).Before(lastExecTime) {
