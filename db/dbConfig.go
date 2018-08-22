@@ -56,13 +56,13 @@ func (db *DBConn) UpdateErrorInTapeReason(poolID string, reason string) error {
 	var tapeID int
 	err := row.Scan(&tapeID)
 	if err != nil {
-		return err
+		return errors.New(err.Error() + "; No TapeID with that poolID")
 	}
 
 	query = "Update Tape set errorinTape=true, errorreason=$2 where id=$1"
 	_, err = db.DBSql.Exec(query, tapeID, reason)
 	if err != nil {
-		return err
+		return errors.New(err.Error() + "; couldn't update tape with sent error reason")
 	}
 	return nil
 }
@@ -77,7 +77,7 @@ func (db *DBConn) UpdateTapeTable(slotNum int, isFull bool, errorinTape bool, ID
 	query := "UPDATE TAPE SET slotnumber=$1, isfull=$2, errorintape=$3 where id=$4"
 	_, err := db.DBSql.Exec(query, slotNum, isFull, errorinTape, ID)
 	if err != nil {
-		return err
+		return errors.New(err.Error() + "; couldn't update tape with slotnumber, isfull, & errorinTape")
 	}
 	return nil
 }
@@ -93,14 +93,14 @@ func (db *DBConn) UpdateStorage(tapeID int, name string) error {
 		query := "UPDATE Storage SET tapeid=NULL where name=$1"
 		_, err := db.DBSql.Exec(query, name)
 		if err != nil {
-			return err
+			return errors.New(err.Error() + "; couldn't update storage")
 		}
 		return nil
 	}
 	query := "UPDATE Storage SET tapeid=$1 where name=$2"
 	_, err := db.DBSql.Exec(query, tapeID, name)
 	if err != nil {
-		return err
+		return errors.New(err.Error() + "; couldn't update storage")
 	}
 	return nil
 }
@@ -124,7 +124,7 @@ func (db *DBConn) GetTapeInfo(tapePath string) (int, int, error) {
 
 	err := row.Scan(&driveNum, &tapeID)
 	if err != nil {
-		return -1, -1, err
+		return -1, -1, errors.New(err.Error() + "; couldn't find driveNum with given tapePath")
 	}
 	return driveNum, tapeID, nil
 }
@@ -149,7 +149,7 @@ func (db *DBConn) GetTapeFromPool(poolID string) (int, int, error) {
 
 	err := row.Scan(&fromslot, &ID)
 	if err != nil {
-		return -1, -1, err
+		return -1, -1, errors.New(err.Error() + "; couldn't find next tape from the pool")
 	}
 
 	return fromslot, ID, nil
@@ -176,16 +176,11 @@ func (db *DBConn) GetPathSpec(path string) (int, string, error) {
 
 	err := row.Scan(&id, &schedule)
 	if err == sql.ErrNoRows {
-		// Need to make sure pathspec table has unique flag on for name
-		err = db.AddPathSpec(path, "2Mins") // Yearly would be better??
-		if err != nil {
-			return -1, "", err
-		}
-		return db.GetPathSpec(path)
+		return -1, "", nil
 	}
 
 	if err != nil {
-		return -1, "", err
+		return -1, "", errors.New(err.Error() + "; error finding the pathspec")
 	}
 
 	return id, schedule, nil
@@ -207,14 +202,15 @@ func (db *DBConn) AddPathSpec(path string, schedule string) error {
 		if err2.Code.Name() == "unique_violation" {
 			return nil
 		}
-		return err
+		return errors.New(err.Error() + "; error adding a new pathspec entry")
 	}
 	return nil
 }
 
 /**
 Description:
-	This method retrieves the startTime of the latest entry of a completed Job
+	This method retrieves the startTime of the latest entry of a completed Job. If Job doesn't
+		exists then it returns the 0001/01/01 date
 Parameter:
 	path: represents the absolute path of a directory/Job
 	poolID: represents the type of backup with respect to the type of tape.
@@ -226,12 +222,17 @@ func (db *DBConn) GetLastExec(path string, poolID string) (time.Time, error) {
 	query := "SELECT starttime FROM Job WHERE name=$1 AND poolID = $2 AND state=$3 ORDER BY startTime DESC"
 	rows, err := db.DBSql.Query(query, path, poolID, States.Complete)
 	if err != nil {
-		return time.Date(1, time.January, 1, 0, 0, 0, 0, time.UTC), err
+		return time.Date(1, time.January, 1, 0, 0, 0, 0, time.UTC),
+			errors.New(err.Error() + "; error quering the list of job with specific name")
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var t time.Time
-		rows.Scan(&t)
+		err := rows.Scan(&t)
+		if err != nil {
+			return time.Date(1, time.January, 1, 0, 0, 0, 0, time.UTC),
+				errors.New(err.Error() + "; error while scanning the result set")
+		}
 		return t, nil
 	}
 
@@ -250,7 +251,7 @@ func (db *DBConn) AddJobTapeMap(jobName string, jobID int, tapeID int) error {
 	query := "INSERT INTO JobTapeMap VALUES(DEFAULT, $1, $2, $3)"
 	_, err := db.DBSql.Exec(query, jobName, jobID, tapeID)
 	if err != nil {
-		return err
+		return errors.New(err.Error() + "; error while adding entry to jobtapemap table")
 	}
 	return nil
 }
@@ -268,9 +269,9 @@ func (db *DBConn) InterruptCloseJob(poolID string) error {
 	query := "UPDATE Job SET state=$2 WHERE poolID=$1 AND state=$3"
 	_, err := db.DBSql.Exec(query, poolID, States.Interrupted, States.InProgress)
 	if err != nil {
-		return err
+		return errors.New(err.Error() + "; error while updating job table with interrupt close")
 	}
-	return err
+	return nil
 }
 
 /**
@@ -285,9 +286,9 @@ func (db *DBConn) UpdateJob(id int, name string, startTime time.Time, duration t
 	query := "UPDATE Job SET startTime=$3, durationInMinutes=$4, numOfFiles=$5, state=$6 WHERE id=$1 AND NAME=$2 AND poolID=$7"
 	_, err := db.DBSql.Exec(query, id, name, startTime, int(duration.Minutes()), numOfFiles, state, poolID)
 	if err != nil {
-		return err
+		return errors.New(err.Error() + "; error while updating job")
 	}
-	return err
+	return nil
 }
 
 /**
@@ -304,7 +305,7 @@ func (db *DBConn) GetStoragePath(poolID string) (string, error) {
 	query := "SELECT Storage.Name FROM Storage Join Pool ON Storage.Id = Pool.StorageId Where Pool.Id =$1"
 	rows, err := db.DBSql.Query(query, poolID)
 	if err != nil {
-		return "", err
+		return "", errors.New(err.Error() + "; couldn't find the storage name for specific pool")
 	}
 	defer rows.Close()
 	var path string
@@ -312,20 +313,20 @@ func (db *DBConn) GetStoragePath(poolID string) (string, error) {
 	if rows.Next() {
 		err := rows.Scan(&path)
 		if err != nil {
-			return "", err
+			return "", errors.New(err.Error() + "; error while scanning the result set")
 		}
 	} else {
 		return "", errors.New(`Tape From That Pool Is Not Loaded Or the DB is Not Updated! 
-		Please load the Tape and update the DB`)
+		Please load the Tape and/or update the DB`)
 	}
 
-	return path, rows.Err()
+	return path, nil
 }
 
 /**
 Description:
 	This method is used to get one initialized job from the DB. It will also update the state of
-	the job that it just retrieved.
+	the job that it just retrieved to be in-progress.
 Parameter:
 	poolID: represents the poolID whose job we need to perform
 	startTime: represents that time that symbolizes the Job has not been scheduled
@@ -337,14 +338,14 @@ func (db *DBConn) GetAJob(poolID string, startTime time.Time) (*Job, error) {
 	query := "SELECT * FROM Job WHERE state='Initialized' AND poolID =$1 ORDER BY ID"
 	rows, err := db.DBSql.Query(query, poolID)
 	if err != nil {
-		return nil, err
+		return nil, errors.New(err.Error() + "; error while quering for job")
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var tempJob Job
 		err := rows.Scan(&tempJob.ID, &tempJob.Name, &tempJob.StartTime, &tempJob.DurationInMinutes, &tempJob.NumOfFiles, &tempJob.State, &tempJob.PoolID, &tempJob.PathSpecID)
 		if err != nil {
-			return nil, err
+			return nil, errors.New(err.Error() + "; error while scanning the result set")
 		}
 		err = db.UpdateJob(tempJob.ID, tempJob.Name, startTime, 0, 0, States.InProgress, tempJob.PoolID)
 		if err != nil {
@@ -357,29 +358,41 @@ func (db *DBConn) GetAJob(poolID string, startTime time.Time) (*Job, error) {
 
 /**
 Description:
-	This method adds a new entry to Job Table, but before adding it checks if it already exists.
+	This method checks if the Job sent as parameter already exists
+Parameter:
+	name: The absolute path of the directory,
+	poolID: The pool for which the job associated
+Return:
+	True if job exists, false if it doesn't
+*/
+func (db *DBConn) CheckJobExists(name string, poolID string) (bool, error) {
+	query := "SELECT name FROM Job WHERE name=$1 AND poolid=$2 AND (state=$3 OR state=$4)"
+	row := db.DBSql.QueryRow(query, name, poolID, States.Initialized, States.InProgress)
+	var tempString string
+	err := row.Scan(&tempString)
+	if err != nil && err != sql.ErrNoRows {
+		return true, errors.New(err.Error() + "; error while checking if job exists")
+	}
+	if err == nil {
+		return true, nil
+	}
+	return false, nil
+}
+
+/**
+Description:
+	This method adds a new entry to Job Table.
 Parameter:
 	The parameters are the columns of table
 Return:
 	error: any error occured while execution, or nil
 */
 func (db *DBConn) AddJob(name string, poolID string, pathspecid int) error {
-	// Check if a job already exists
-	query := "SELECT name FROM Job WHERE name=$1 AND poolid=$2 AND state=$3"
-	row := db.DBSql.QueryRow(query, name, poolID, States.Initialized)
-	var tempString string
-	err := row.Scan(&tempString)
-	if err != nil && err != sql.ErrNoRows {
-		return err
-	}
-	if err == nil {
-		return nil
-	}
 	// Make a new job only if error is norow found
-	query = "INSERT INTO JOB(id, name, state, poolid, pathspecid) VALUES (DEFAULT, $1, 'Initialized', $2, $3);"
-	_, err = db.DBSql.Exec(query, name, poolID, pathspecid)
+	query := "INSERT INTO JOB(id, name, state, poolid, pathspecid) VALUES (DEFAULT, $1, $2, $3, $4);"
+	_, err := db.DBSql.Exec(query, name, States.Initialized, poolID, pathspecid)
 	if err != nil {
-		return err
+		return errors.New(err.Error() + "; error while adding a Job")
 	}
 	return nil
 }
@@ -396,7 +409,7 @@ func (db *DBConn) AddFile(fileName string, jobID int, tapeID int, fileMarkNum in
 	query := "INSERT INTO File VALUES(DEFAULT, $1, $2, $3, $4)"
 	_, err := db.DBSql.Exec(query, fileName, jobID, fileMarkNum, tapeID)
 	if err != nil {
-		return err
+		return errors.New(err.Error() + "; error while adding a File")
 	}
 	return nil
 }
@@ -416,7 +429,7 @@ func (db *DBConn) GetPair(poolID string) (string, error) {
 	var poolName string
 	err := row.Scan(&poolName)
 	if err != nil {
-		return "", err
+		return "", errors.New(err.Error() + "; error while scanning the result set")
 	}
 	// Getting the string eg ST_000L7 (3rd slot represents the location)
 	pairPoolName := poolName[:2] + "_" + poolName[3:]
@@ -425,7 +438,7 @@ func (db *DBConn) GetPair(poolID string) (string, error) {
 	var pairPoolID int
 	err = row.Scan(&pairPoolID)
 	if err != nil {
-		return "", err
+		return "", errors.New(err.Error() + "; error while scanning the result set")
 	}
 	return strconv.Itoa(pairPoolID), nil
 }

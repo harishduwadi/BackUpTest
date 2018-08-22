@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strconv"
 	"sync"
 	"syscall"
 	"time"
@@ -31,11 +32,17 @@ func main() {
 	var err error
 
 	if len(os.Args) < 2 {
-		fmt.Fprintln(os.Stderr, "Command Line Argument Expected!\nThe Command Line Arguments represents which pool we'll be adding")
+		fmt.Fprintln(os.Stderr, `Command Line Argument Expected!
+		The Command Line Arguments represents the pool pair in which we'll be adding data`)
 		return
 	}
 
 	poolID := os.Args[1]
+	_, err = strconv.Atoi(poolID)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Invalid argument, please enter a valid poolID by looking in the DB")
+		return
+	}
 
 	err = setupBackupConfig(backUpA, poolID)
 	if err != nil {
@@ -45,6 +52,7 @@ func main() {
 	}
 	defer closeAll(backUpA)
 
+	// Getting the pair's poolID, eg STA000L7 pair is STAB000L7
 	pairPoolID, err := backUpA.DB.GetPair(poolID)
 	if err != nil {
 		return
@@ -63,6 +71,8 @@ func main() {
 
 	cron := cron.New()
 
+	// Need to sync these two threads when tape change occurs, both tries to access same
+	// file.
 	backUpA.syncTapeChange = &sync.Mutex{}
 	backUpB.syncTapeChange = backUpA.syncTapeChange
 
@@ -77,44 +87,42 @@ func main() {
 		os.Exit(1)
 	}()
 
-	arr := []string{"/ccr/2017", "/ccr/2018/07", "/ccr/2018/02", "/ccr/2018"}
+	// For testing purpose-- will be replaced with "/" directory
+	arr := []string{"/ccr", "/prod"}
 	i := -1
 	j := -1
-	// For Testing Purpose
+	// For testing purpose
 
-	for key, val := range schedules {
-		cron.AddFunc(val, func() {
+	for scheduleType, scheduleInCronFormat := range schedules {
+		cron.AddFunc(scheduleInCronFormat, func() {
 			activeThreads = activeThreads + 1
 			defer func() {
 				activeThreads = activeThreads - 1
 			}()
 
-			i = (i + 1) % 4
-			cronJob(backUpA, arr[i], poolID, key, makeJobCompletedA)
+			i = (i + 1) % len(arr)
+			cronJob(backUpA, arr[i], poolID, scheduleType, makeJobCompletedA)
 
 		})
-		cron.AddFunc(val, func() {
+		cron.AddFunc(scheduleInCronFormat, func() {
 			activeThreads = activeThreads + 1
 			defer func() {
 				activeThreads = activeThreads - 1
 			}()
 
-			j = (j + 1) % 4
-			cronJob(backUpB, arr[j], pairPoolID, key, makeJobCompletedB)
+			j = (j + 1) % len(arr)
+			cronJob(backUpB, arr[j], pairPoolID, scheduleType, makeJobCompletedB)
 		})
 	}
 
 	cron.Start()
+	defer cron.Stop()
 
 	fmt.Println(currentTime)
 
 	for {
 		// Do nothing
 		time.Sleep(20 * time.Second)
-		// Testing
-		if time.Now().In(time.UTC).After(currentTime.Add(60 * time.Minute)) {
-			return
-		}
 
 		if backUpA.errorEncountered && backUpB.errorEncountered {
 			return
@@ -136,9 +144,12 @@ Parameters:
 func cronJob(backUp *backUpconfig, root string, poolID string, jobType string, makeJobCompleted chan error) error {
 
 	// Run only one cron Job of one pool type at a time
-	backUp.syncMakeExecJob.Lock()
-	defer backUp.syncMakeExecJob.Unlock()
+	// Discreprancy when both cron thread are running and both try to write to
+	// same tape and/or update the DB
+	backUp.syncCronJobs.Lock()
+	defer backUp.syncCronJobs.Unlock()
 
+	// Start another cron Job only if there wasn't any signal Interrupt sent by user
 	if backUp.signalInterruptChan {
 		return nil
 	}
@@ -149,7 +160,7 @@ func cronJob(backUp *backUpconfig, root string, poolID string, jobType string, m
 		fmt.Println(poolID, err)
 		backUp.DB.UpdateErrorInTapeReason(poolID, err.Error())
 		backUp.errorEncountered = true
-		// Update the tape stating that there was an error in the tape
+		// If there is an error, sleep until the user sends a signal interrupt
 		backUp.execJobClosed <- 1
 		return err
 	}
@@ -181,7 +192,7 @@ func setupBackupConfig(config *backUpconfig, poolID string) error {
 	if err != nil {
 		return err
 	}
-	config.syncMakeExecJob = &sync.Mutex{}
+	config.syncCronJobs = &sync.Mutex{}
 
 	config.execJobClosed = make(chan int)
 

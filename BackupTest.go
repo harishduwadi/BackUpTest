@@ -32,7 +32,7 @@ type backUpconfig struct {
 	Client              *hdfs.Client
 	TapeConfig          *tape.Config
 	DB                  *pgdb.DBConn
-	syncMakeExecJob     *sync.Mutex
+	syncCronJobs        *sync.Mutex
 	syncTapeChange      *sync.Mutex
 	signalInterruptChan bool
 	execJobClosed       chan int
@@ -50,19 +50,40 @@ func (config *backUpconfig) makeJobs(poolID string, jobType string, makeJobCompl
 		if err != nil {
 			return err
 		}
+		// Check to see if the user has sent a signal interrupt
 		if config.signalInterruptChan {
 			return errors.New("Signal Interrupt")
 		}
-		// Each Job is a directory in HDFS
+		// Each Job is a directory in HDFS; ignore regular file
 		if !info.IsDir() {
 			return nil
 		}
+		// Get the PathSpec ID and the scheduled backup of the directory
 		pathspecid, schedule, err := config.DB.GetPathSpec(path)
 		if err != nil {
 			return err
 		}
+		// If pathspec was not found in the DB
+		if schedule == "" {
+			err := config.DB.AddPathSpec(path, jobType) // TODO need to change jobtype
+			if err != nil {
+				return err
+			}
+			pathspecid, schedule, err = config.DB.GetPathSpec(path)
+			if err != nil {
+				return err
+			}
+		}
 		// Check if the backup schedule of the directory is different
 		if schedule != jobType {
+			return nil
+		}
+		// Check if the Jobs has already been created and not executed
+		jobExists, err := config.DB.CheckJobExists(path, poolID)
+		if err != nil {
+			return err
+		}
+		if jobExists {
 			return nil
 		}
 		err = config.DB.AddJob(path, poolID, pathspecid)
@@ -79,7 +100,8 @@ func (config *backUpconfig) makeJobs(poolID string, jobType string, makeJobCompl
 
 /**
 Description:
-	This function get all the jobs (one at a time) from the DB and calls other function to execute it
+	This function get all the jobs (one at a time) from the DB and calls other function
+	to execute it
 Parameter:
 	(See cronJob)
 Return:
@@ -95,32 +117,35 @@ func (config *backUpconfig) execJobs(poolID string, makeJobCompleted chan error)
 		<-waitForMakeJob
 	}()
 
-	// This go routine waits for the completion of makeJob go routine, check to end the
-	// forever loop below
+	// This go routine waits for the completion of makeJob go routine, needed as acheck to
+	// end the forever loop below
 	go func() {
 		errorMakingJobs = <-makeJobCompleted
 		jobCreationCompleted = true
 		waitForMakeJob <- 1
 	}()
 
+	// Jump to the position where new data needs to ne added to tape
 	if err := config.TapeConfig.JumpToEOM(); err != nil {
 		return err
 	}
 
 	for {
 
+		// Return if there was an error while creating a job
 		if errorMakingJobs != nil {
 			return errorMakingJobs
 		}
 
 		startTime := time.Now().In(time.UTC)
 
+		// Get the id of the tape where job will be stored
 		_, tapeID, err := config.DB.GetTapeInfo(config.TapeConfig.TapePath)
 		if err != nil {
 			return err
 		}
 
-		// Get one (currently any) initialized Job from the DB
+		// Get one initialized Job belonging to the same pool from the DB
 		aJob, err := config.DB.GetAJob(poolID, startTime)
 		if err != nil {
 			return err
@@ -175,6 +200,7 @@ func (config *backUpconfig) execSingleJob(jobID int, path string, tapeID int, po
 		return filesAdded, err
 	}
 
+	// For testing purpose
 	fmt.Println(poolID, path)
 
 	// Get the time when directory "path" was last backed up
@@ -230,6 +256,7 @@ func (config *backUpconfig) execSingleJob(jobID int, path string, tapeID int, po
 
 		filesAdded++
 
+		// Writing end of file marker on tape to distinguish one file from another
 		if err := config.TapeConfig.WriteEOF(); err != nil {
 			return filesAdded, err
 		}
@@ -276,6 +303,8 @@ Return:
 */
 func (config *backUpconfig) changeTape(poolID string) (int, error) {
 
+	// Lock when trying to access the scsi generic file which does the
+	// tape changing operation; only one thread can open a file at a time
 	config.syncTapeChange.Lock()
 	defer config.syncTapeChange.Unlock()
 
@@ -308,6 +337,7 @@ func (config *backUpconfig) changeTape(poolID string) (int, error) {
 		return -1, err
 	}
 
+	// Refresh the tape to get correct file mark number
 	config.TapeConfig.RetensionOfTape()
 
 	return newTapeID, nil
@@ -329,7 +359,7 @@ func (config *backUpconfig) loadAndUpdate(driveNum int, fromSlot int, newTapeID 
 		return err
 	}
 
-	// Setting the tape again, in the same file w.r.t file system, and same recordsize
+	// Setting the tape again, because the tape was changed
 	err = config.TapeConfig.DeepCopy(config.TapeConfig.TapePath)
 	if err != nil {
 		return err
@@ -391,7 +421,7 @@ func (config *backUpconfig) checkBackUpNeeded(fileInfo os.FileInfo, lastExecTime
 		return false
 	}
 	// Only for testing purpose
-	if fileInfo.Size() > 15000000 {
+	if fileInfo.Size() > 12000000 {
 		return false
 	}
 	if (fileInfo.ModTime().In(time.UTC)).Before(lastExecTime) {
@@ -421,10 +451,12 @@ func (config *backUpconfig) writeOneFile(path string, fileheader os.FileInfo, fi
 	header.Mode = int64(fileheader.Mode())
 	header.ModTime = fileheader.ModTime()
 
+	// Write tar header to the tape
 	if err := tw.WriteHeader(header); err != nil {
 		return err
 	}
 
+	// Write the actual file to the tape
 	if fileheader.Size() != 0 {
 		if _, err := io.Copy(config.TapeConfig.TapeWriter, fileReader); err != nil {
 			return err
@@ -434,13 +466,16 @@ func (config *backUpconfig) writeOneFile(path string, fileheader os.FileInfo, fi
 		config.TapeConfig.TapeWriter.Write(make([]byte, (512 - (config.TapeConfig.TapeWriter.Buffered() % 512))))
 	}
 
+	// Write the tar footer- 1024 bytes of 0 marking end of tar file
 	config.TapeConfig.TapeWriter.Write(make([]byte, tarEndPad))
 
+	// Fill the buffer to flush the remaning bytes to the tape
 	_, err := config.TapeConfig.TapeWriter.Write(make([]byte, config.TapeConfig.TapeWriter.Available()))
 	if err != nil {
 		return err
 	}
 
+	// Flush both buffers
 	err = config.TapeConfig.FlushBuffers()
 	if err != nil {
 		return err
