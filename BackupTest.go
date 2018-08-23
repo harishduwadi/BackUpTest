@@ -45,52 +45,58 @@ Description:
 Parameters:
 	(See cronJob)
 */
-func (config *backUpconfig) makeJobs(poolID string, jobType string, makeJobCompleted chan error, root string) {
+func (config *backUpconfig) makeJobs(poolID string, jobType string, makeJobCompleted chan error, root string, errorFound chan error) {
 	err := config.Client.Walk(root, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
+		select {
+		case err := <-errorFound:
 			return err
-		}
-		// Check to see if the user has sent a signal interrupt
-		if config.signalInterruptChan {
-			return errors.New("Signal Interrupt")
-		}
-		// Each Job is a directory in HDFS; ignore regular file
-		if !info.IsDir() {
-			return nil
-		}
-		// Get the PathSpec ID and the scheduled backup of the directory
-		pathspecid, schedule, err := config.DB.GetPathSpec(path)
-		if err != nil {
-			return err
-		}
-		// If pathspec was not found in the DB
-		if schedule == "" {
-			err := config.DB.AddPathSpec(path, jobType) // TODO need to change jobtype
+		default:
+
 			if err != nil {
 				return err
 			}
-			pathspecid, schedule, err = config.DB.GetPathSpec(path)
+			// Check to see if the user has sent a signal interrupt
+			if config.signalInterruptChan {
+				return errors.New("Signal Interrupt")
+			}
+			// Each Job is a directory in HDFS; ignore regular file
+			if !info.IsDir() {
+				return nil
+			}
+			// Get the PathSpec ID and the scheduled backup of the directory
+			pathspecid, schedule, err := config.DB.GetPathSpec(path)
 			if err != nil {
 				return err
 			}
-		}
-		// Check if the backup schedule of the directory is different
-		if schedule != jobType {
+			// If pathspec was not found in the DB
+			if schedule == "" {
+				err := config.DB.AddPathSpec(path, jobType) // TODO need to change jobtype
+				if err != nil {
+					return err
+				}
+				pathspecid, schedule, err = config.DB.GetPathSpec(path)
+				if err != nil {
+					return err
+				}
+			}
+			// Check if the backup schedule of the directory is different
+			if schedule != jobType {
+				return nil
+			}
+			// Check if the Jobs has already been created and not executed
+			jobExists, err := config.DB.CheckJobExists(path, poolID)
+			if err != nil {
+				return err
+			}
+			if jobExists {
+				return nil
+			}
+			err = config.DB.AddJob(path, poolID, pathspecid)
+			if err != nil {
+				return err
+			}
 			return nil
 		}
-		// Check if the Jobs has already been created and not executed
-		jobExists, err := config.DB.CheckJobExists(path, poolID)
-		if err != nil {
-			return err
-		}
-		if jobExists {
-			return nil
-		}
-		err = config.DB.AddJob(path, poolID, pathspecid)
-		if err != nil {
-			return err
-		}
-		return nil
 	})
 	if err != nil {
 		makeJobCompleted <- err
@@ -107,18 +113,29 @@ Parameter:
 Return:
 	error: any error occured while execution, or nil
 */
-func (config *backUpconfig) execJobs(poolID string, makeJobCompleted chan error) error {
+func (config *backUpconfig) execJobs(poolID string, makeJobCompleted chan error, sendError chan error) error {
 
 	jobCreationCompleted := false
 	var errorMakingJobs error
 	waitForMakeJob := make(chan int)
 
 	defer func() {
-		<-waitForMakeJob
+		select {
+		// If the makeJob routine has not been terminated yet, send signal to terminated it and defer out
+		// of the routine
+		case sendError <- errors.New("Error While Executing"):
+			break
+		// If the makeJob routine has been terminated, go ahead and defer out of the routine
+		case <-waitForMakeJob:
+			break
+		}
 	}()
 
-	// This go routine waits for the completion of makeJob go routine, needed as acheck to
+	// This go routine waits for the completion of makeJob go routine, needed as a check to
 	// end the forever loop below
+	// Has to be a go routine to avoid a deadlock when sendError channel is waiting for makeJob
+	// but makeJob already terminated, but before makeJob terminated, there was a error in execJob
+	// causing the PC for thread to enter defer
 	go func() {
 		errorMakingJobs = <-makeJobCompleted
 		jobCreationCompleted = true
@@ -522,8 +539,22 @@ func (config *backUpconfig) cleanUp(poolID string) {
 		log.Println(err)
 	}
 
-	config.TapeConfig.CloseTape()
-	config.DB.Close()
-	config.Client.Close()
+	config.closeAll()
 
+}
+
+/**
+Description:
+	This function is used to close the resources that were open during execution
+*/
+func (config *backUpconfig) closeAll() {
+	if config.DB != nil {
+		config.DB.Close()
+	}
+	if config.Client != nil {
+		config.Client.Close()
+	}
+	if config.TapeConfig != nil {
+		config.TapeConfig.CloseTape()
+	}
 }

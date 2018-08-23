@@ -17,7 +17,7 @@ import (
 var activeThreads int
 
 var schedules = map[string]string{
-	"2Mins": "00 */02 * * * *",
+	"2Mins": "00 */05 * * * *", // For testing purpose
 	//"Hourly":  "00 00 * * * *",
 	//"Daily":   "00 00 23 * * *",
 	//"Monthly": "00 00 23 1 * *",
@@ -47,10 +47,10 @@ func main() {
 	err = setupBackupConfig(backUpA, poolID)
 	if err != nil {
 		fmt.Println(err)
-		closeAll(backUpA)
+		backUpA.closeAll()
 		return
 	}
-	defer closeAll(backUpA)
+	defer backUpA.closeAll()
 
 	// Getting the pair's poolID, eg STA000L7 pair is STAB000L7
 	pairPoolID, err := backUpA.DB.GetPair(poolID)
@@ -60,14 +60,10 @@ func main() {
 
 	err = setupBackupConfig(backUpB, pairPoolID)
 	if err != nil {
-		closeAll(backUpB)
+		backUpB.closeAll()
 		return
 	}
-	defer closeAll(backUpB)
-
-	// Channel used to for communication betweem makeJob go routine and exexJobs go routine
-	makeJobCompletedA := make(chan error)
-	makeJobCompletedB := make(chan error)
+	defer backUpB.closeAll()
 
 	cron := cron.New()
 
@@ -101,7 +97,7 @@ func main() {
 			}()
 
 			i = (i + 1) % len(arr)
-			cronJob(backUpA, arr[i], poolID, scheduleType, makeJobCompletedA)
+			cronJob(backUpA, arr[i], poolID, scheduleType)
 
 		})
 		cron.AddFunc(scheduleInCronFormat, func() {
@@ -111,7 +107,7 @@ func main() {
 			}()
 
 			j = (j + 1) % len(arr)
-			cronJob(backUpB, arr[j], pairPoolID, scheduleType, makeJobCompletedB)
+			cronJob(backUpB, arr[j], pairPoolID, scheduleType)
 		})
 	}
 
@@ -141,7 +137,7 @@ Parameters:
 	jobType: reprents the type of backup that is ran from the cronJob schedular
 	makeJobCompleted: represents the channel that is used for communcation betweeen the makeJob and execJob go routines
 */
-func cronJob(backUp *backUpconfig, root string, poolID string, jobType string, makeJobCompleted chan error) error {
+func cronJob(backUp *backUpconfig, root string, poolID string, jobType string) error {
 
 	// Run only one cron Job of one pool type at a time
 	// Discreprancy when both cron thread are running and both try to write to
@@ -154,9 +150,15 @@ func cronJob(backUp *backUpconfig, root string, poolID string, jobType string, m
 		return nil
 	}
 
-	go backUp.makeJobs(poolID, jobType, makeJobCompleted, root)
+	// channel used to signal the end of makeJob go routine
+	makeJobCompleted := make(chan error)
 
-	if err := backUp.execJobs(poolID, makeJobCompleted); err != nil {
+	// channel used to signal the error encountered in execJob to makeJob
+	errorWhileExecuting := make(chan error)
+
+	go backUp.makeJobs(poolID, jobType, makeJobCompleted, root, errorWhileExecuting)
+
+	if err := backUp.execJobs(poolID, makeJobCompleted, errorWhileExecuting); err != nil {
 		fmt.Println(poolID, err)
 		backUp.DB.UpdateErrorInTapeReason(poolID, err.Error())
 		backUp.errorEncountered = true
@@ -199,22 +201,4 @@ func setupBackupConfig(config *backUpconfig, poolID string) error {
 	config.signalInterruptChan = false
 
 	return nil
-}
-
-/**
-Description:
-	This function is used to close the resources that were open during execution
-Parameter:
-	config: The struct whose resources needs closing
-*/
-func closeAll(config *backUpconfig) {
-	if config.DB != nil {
-		config.DB.Close()
-	}
-	if config.Client != nil {
-		config.Client.Close()
-	}
-	if config.TapeConfig != nil {
-		config.TapeConfig.CloseTape()
-	}
 }
