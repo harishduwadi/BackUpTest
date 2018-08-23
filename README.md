@@ -44,7 +44,9 @@ Create Table PathSpec (
 Create Table Job (
 	ID Serial Primary Key,
 	Name varchar,
-	NumOfFiles timestamp,
+	StartTime timestamp,
+	DurationInMinutes integer,
+	NumOfFiles integer,
 	State varchar,
 	PoolID integer,
 	PathSpecID integer
@@ -77,7 +79,7 @@ Create Table Storage (
 	ID Serial Primary Key,
 	Name varchar,
 	TapeID integer,
-	DriveNum integer
+	DriveNumber integer
 );
 
 Create Table JobTapeMap (
@@ -114,7 +116,6 @@ Alter Table JobTapeMap Add Foreign Key (TapeID) references Tape(ID);
 Note: The release version 1.5-3_release doesn’t have a bug fix, so need to use the master version
 * Configuration Steps
   *Packages Needed
-    * libz-dev
     * liblzo2-dev
     * sg3-utils
     * lsscsi
