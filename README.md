@@ -5,6 +5,16 @@
 ### OS:
 The resources this program requires only works on Ubuntu 16.04.
 
+### Go:
+* Download Go archive from https://golang.org/dl/
+* Extract the files by issuing:
+``` $ tar -C /usr/local -xzf ~/Downloads/go$VERSION.$OS-$ARCH.tar.gz ```
+* Add go binary file path to the Path environmnet variable; either in /etc/profile or .profile
+``` $ echo 'export PATH=$PATH:/usr/local/go/bin' >> ~/.profile ``` <br />
+The environmnet variable will be updated once we restart the system, or immediately (until the current <br />
+terminal is open) by running the command
+``` $ source ~/.profile ```
+
 ### Database:
 * Creating a Postgres DB Account:
   * Download Postgres
