@@ -104,13 +104,14 @@ Alter Table JobTapeMap Add Foreign Key (TapeID) references Tape(ID);
 Note: The release version 1.5-3_release doesn’t have a bug fix, so need to use the master version
 * Configuration Steps
   *Packages Needed
-    * zlib
+    * libz-dev
     * liblzo2-dev
     * sg3-utils
     * lsscsi
     * linux-libc-dev
     * mtx
-    * mt
+    * mt-st
+    * make
   * Steps: (Assuming git clone was done in ~ directory)
     * ``` $ cd ~/mhvtl/kernel ```
     * ``` $ make ```
@@ -118,8 +119,10 @@ Note: The release version 1.5-3_release doesn’t have a bug fix, so need to use
     * ``` $ sudo make install ```
     * ``` $ cd ~/mhvtl ```
     * ``` $ make ```
+    * ``` $ sudo adduser vtl ```
+    * ensure /etc/passwd vtl user has /bin/bash (sudo vim /etc/passwd ; search for vtl and change /bin/... to /bin/bash)
+    * ensure /opt/mhvtl is owned by vtl user/group (sudo chown vtl: /opt/mhvtl)
     * ``` $ sudo make install ```
-    * change /etc/passwd vtl to /bin/bash 
     * ``` $ sudo /etc/init.d/mhvtl start ``` 
     
 At this point using lsscsi -g command we should be able to find 10 tapes. <br />
