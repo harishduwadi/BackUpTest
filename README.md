@@ -149,7 +149,11 @@ We’ll be using /dev/sg10 SCSI generic tape drive for loading and unloading tap
 
 ### Run 
 
-Note: After either cloning the repo or issuing the go get command, BackUpTest.go and main.go have import statements that have testusr as a github user. There does not exist any testusr github user. Please change the testusr to your own github username; this is where the file was cloned to.
+Note:
+  * After either cloning the repo or issuing the go get command, BackUpTest.go and main.go have import statements that have testusr as a github user. There does not exist any testusr github user. Please change the testusr to user under which the source is present (currently harishduwadi).
+  * The db setup needs a txt file that has the database authentication information, the format the code looks for is: <br />
+  	(username) (password) (databasename) <br />
+    This file should in ~/go/src/github.com/harishduwadi/BackUpTest
 
   * ``` go run BackupTest.go main.go 1 ``` <br />
 (Here the arguments represents the tape pool, which we just loaded in pre-run step)
