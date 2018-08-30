@@ -4,10 +4,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"os"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/lib/pq"
@@ -447,13 +445,7 @@ func (db *DBConn) GetPair(poolID string) (string, error) {
 Description: This method is used to connect to the pg server
 */
 func New() (*DBConn, error) {
-	bytesRead, err := ioutil.ReadFile("dbAuthen.txt")
-	if err != nil {
-		return nil, err
-	}
-	auth := string(bytesRead)
-	autharr := strings.Split(auth, " ")
-	connStr := "user=" + autharr[0] + " password=" + autharr[1] + " dbname=" + autharr[2]
+	connStr := "host=us-lax-1w-stream-00 port=5432 user=hdfsbackup password=wise67slim dbname=hdfsbackup"
 
 	db, err := sql.Open("postgres", connStr)
 	if err != nil {

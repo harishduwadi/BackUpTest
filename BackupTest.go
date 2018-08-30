@@ -3,7 +3,6 @@ package main
 import (
 	"archive/tar"
 	"errors"
-	"fmt"
 	"io"
 	"log"
 	"os"
@@ -216,9 +215,6 @@ func (config *backUpconfig) execSingleJob(jobID int, path string, tapeID int, po
 	if err := config.DB.AddJobTapeMap(path, jobID, tapeID); err != nil {
 		return filesAdded, err
 	}
-
-	// For testing purpose
-	fmt.Println(poolID, path)
 
 	// Get the time when directory "path" was last backed up
 	lastExecTime, err := config.DB.GetLastExec(path, poolID)
@@ -435,10 +431,6 @@ Return:
 */
 func (config *backUpconfig) checkBackUpNeeded(fileInfo os.FileInfo, lastExecTime time.Time) bool {
 	if fileInfo.IsDir() {
-		return false
-	}
-	// Only for testing purpose
-	if fileInfo.Size() > 12000000 {
 		return false
 	}
 	if (fileInfo.ModTime().In(time.UTC)).Before(lastExecTime) {

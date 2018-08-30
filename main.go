@@ -17,8 +17,7 @@ import (
 var activeThreads int
 
 var schedules = map[string]string{
-	"2Mins": "00 */05 * * * *", // For testing purpose
-	//"Hourly":  "00 00 * * * *",
+	"Hourly": "00 00 * * * *",
 	//"Daily":   "00 00 23 * * *",
 	//"Monthly": "00 00 23 1 * *",
 	//"Yearly":  "00 00 23 1 1 *",
@@ -84,7 +83,7 @@ func main() {
 	}()
 
 	// For testing purpose-- will be replaced with "/" directory
-	arr := []string{"/ccr", "/prod"}
+	arr := []string{"/prod/logs"}
 	i := -1
 	j := -1
 	// For testing purpose
@@ -113,8 +112,6 @@ func main() {
 
 	cron.Start()
 	defer cron.Stop()
-
-	fmt.Println(currentTime)
 
 	for {
 		// Do nothing
