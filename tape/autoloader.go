@@ -11,7 +11,7 @@ import (
 func Unload(driveNum int, slotNum int) error {
 	driveN := strconv.Itoa(driveNum)
 	slotN := strconv.Itoa(slotNum)
-	cmd := exec.Command("mtx", "-f", "/dev/sg5", "unload", slotN, driveN)
+	cmd := exec.Command("mtx", "-f", "/dev/sg4", "unload", slotN, driveN)
 	var errorMessg bytes.Buffer
 	cmd.Stderr = &errorMessg
 	err := cmd.Run()
@@ -21,10 +21,10 @@ func Unload(driveNum int, slotNum int) error {
 	return nil
 }
 
-// GetMTXStatus is used to get the status of the tape library, which slot are empty, full, and name of tape if present
-func GetMTXStatus() (string, error) {
+// GetStatus is used to get the status of the tape library, which slot are empty, full, and name of tape if present
+func GetStatus(command string, path string) (string, error) {
 
-	cmd := exec.Command("mtx", "-f", "/dev/sg5", "status")
+	cmd := exec.Command(command, "-f", path, "status")
 	var out bytes.Buffer
 	cmd.Stdout = &out
 	var errorMessg bytes.Buffer
@@ -43,7 +43,7 @@ func GetMTXStatus() (string, error) {
 func Load(driveNum int, slotNum int) error {
 	driveN := strconv.Itoa(driveNum)
 	slotN := strconv.Itoa(slotNum)
-	cmd := exec.Command("mtx", "-f", "/dev/sg5", "load", slotN, driveN)
+	cmd := exec.Command("mtx", "-f", "/dev/sg4", "load", slotN, driveN)
 	var errorMessg bytes.Buffer
 	cmd.Stderr = &errorMessg
 	err := cmd.Run()
@@ -53,8 +53,9 @@ func Load(driveNum int, slotNum int) error {
 	return nil
 }
 
+// GetAEmptySlot is used to find a empty slot in the tape library
 func GetAEmptySlot() (int, error) {
-	statusString, err := GetMTXStatus()
+	statusString, err := GetStatus("mtx", "/dev/sg4")
 	if err != nil {
 		return -1, err
 	}
