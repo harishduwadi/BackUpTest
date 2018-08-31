@@ -66,7 +66,8 @@ Create Table Tape (
 	PoolID integer,
 	SlotNumber integer,
 	IsFull boolean,
-	ErrorInTape boolean
+	ErrorInTape boolean,
+  ErrorReason varchar
 );
 
 Create Table Pool (
@@ -107,6 +108,7 @@ Alter Table Pool Add Foreign Key (StorageID) references Storage(ID);
 Alter Table Storage Add Foreign Key (TapeID) references Tape(ID);
 Alter Table JobTapeMap Add Foreign Key (JobID) references Job(ID);
 Alter Table JobTapeMap Add Foreign Key (TapeID) references Tape(ID);
+Alter Table Pathspec Add Unique (name);
 ```
 
 ### Virtual Tape (Will be replaced with the actual tape later)
