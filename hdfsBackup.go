@@ -17,7 +17,7 @@ import (
 var activeThreads int
 
 var schedules = map[string]string{
-	"Hourly": "00 */05 * * * *",
+	"Hourly": "00 00 * * * *",
 	//"Daily":   "00 00 23 * * *",
 	//"Monthly": "00 00 23 1 * *",
 	//"Yearly":  "00 00 23 1 1 *",
@@ -85,7 +85,7 @@ func main() {
 	}()
 
 	// For testing purpose-- will be replaced with "/" directory
-	arr := []string{"/prod/logs/bom2buy.com/access/2017/12"}
+	arr := []string{"/prod/logs"}
 	i := -1
 	j := -1
 	// For testing purpose
